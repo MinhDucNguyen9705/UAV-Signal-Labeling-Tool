@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RF Spectrogram Annotator (CVAT BDW Edition)</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📡</text></svg>">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link rel="stylesheet" href="css/style.css?v=3.3">
+  <link rel="stylesheet" href="css/canvas.css?v=3.3">
+</head>
+
+<body>
+
+  <!-- App Header / Top Navigation -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="logo-badge">
+        <div class="logo-icon"><i class="fas fa-wave-square"></i></div>
+        <span>RF-CVAT</span>
+      </div>
+      <div class="file-info-tag" id="datasetBadge">
+        <div class="status-dot"></div>
+        <span id="datasetFileName">demo_capture.h5</span>
+        <span>•</span>
+        <span id="datasetFs">61.44 MHz</span>
+        <span>•</span>
+        <span id="datasetDuration">5.00 ms</span>
+      </div>
+    </div>
+
+    <!-- Center Navigation Bar -->
+    <div class="nav-center">
+      <button class="nav-btn" id="prevChunkBtn" title="Previous Chunk (D / Left Arrow)">
+        <i class="fas fa-chevron-left"></i>
+      </button>
+      <select class="chunk-selector-select" id="chunkSelect">
+        <!-- Chunks injected dynamically -->
+      </select>
+      <button class="nav-btn" id="nextChunkBtn" title="Next Chunk (F / Right Arrow)">
+        <i class="fas fa-chevron-right"></i>
+      </button>
+      <div class="chunk-time-badge" id="chunkTimeBadge">0.000 ms → 1.000 ms</div>
+    </div>
+
+    <!-- Right Header Actions -->
+    <div class="header-actions">
+      <button class="btn btn-secondary" id="openUploadBtn">
+        <i class="fas fa-cloud-upload-alt"></i> Upload (.h5/.iq)
+      </button>
+      <!-- Sample Generator Button -->
+      <button class="btn btn-secondary" id="openSampleBtn">
+        <i class="fas fa-bolt"></i> Sample Generator
+      </button>
+
+      <!-- Waterfall Video Modal Button -->
+      <button class="btn btn-secondary" id="openWaterfallBtn" title="Render & View Continuous Waterfall Video">
+        <i class="fas fa-film" style="color: var(--accent-orange);"></i> Waterfall Video
+      </button>
+
+      <!-- Auto Label Button -->
+      <button class="btn btn-primary" id="openAutoLabelBtn" style="background: linear-gradient(135deg, #a855f7 0%, #00e5ff 100%); border: none; font-weight: 700;" title="Auto-Label Spectrograms using CFAR or ONNX AI Model">
+        <i class="fas fa-magic"></i> Auto Label
+      </button>
+
+      <!-- Import COCO Annotations Button -->
+      <button class="btn btn-secondary" id="importCocoBtn" title="Import Annotations from COCO JSON file (.json)">
+        <i class="fas fa-file-import" style="color: var(--accent-cyan);"></i> Import COCO
+      </button>
+      <input type="file" id="importCocoFileInput" accept=".json,application/json" style="display: none;">
+
+      <!-- Export Dropdown -->
+      <div class="dropdown" id="exportDropdown">
+        <button class="btn btn-primary" id="exportToggleBtn">
+          <i class="fas fa-download"></i> Export <i class="fas fa-caret-down"
+            style="font-size: 10px; margin-left: 2px;"></i>
+        </button>
+        <div class="dropdown-content">
+          <div class="dropdown-item" id="exportCocoBtn">
+            <i class="fas fa-file-code"></i> Export COCO JSON (BDW Structure)
+          </div>
+          <div class="dropdown-item" id="exportZipBtn">
+            <i class="fas fa-file-archive"></i> Download Dataset ZIP (Images + Annotations)
+          </div>
+          <div class="dropdown-item" id="exportZipWithIqBtn">
+            <i class="fas fa-wave-square" style="color: var(--accent-cyan);"></i> Download Complete Bundle (IQ Chunks + Images + Annotations)
+          </div>
+          <div class="dropdown-item" id="exportWaterfallDropdownBtn">
+            <i class="fas fa-video"></i> Render & Download Waterfall Video (MP4)
+          </div>
+          <div class="dropdown-divider" style="height: 1px; background: var(--border-color); margin: 4px 0;"></div>
+          <div class="dropdown-item" id="importCocoDropdownBtn">
+            <i class="fas fa-file-import" style="color: var(--accent-cyan);"></i> Import COCO JSON File
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-outline" id="openHotkeysBtn" title="Keyboard Shortcuts (?)">
+        <i class="fas fa-keyboard"></i>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Viewport Layout -->
+  <main class="app-main">
+
+    <!-- Left Toolbar -->
+    <aside class="toolbar-left">
+      <div class="tool-group">
+        <button class="tool-btn active" data-tool="draw" id="toolDrawBtn" title="Draw Bounding Box (N)">
+          <i class="fas fa-vector-square"></i>
+          <span class="hotkey-badge">N</span>
+        </button>
+        <button class="tool-btn" data-tool="select" id="toolSelectBtn" title="Select / Move (V)">
+          <i class="fas fa-mouse-pointer"></i>
+          <span class="hotkey-badge">V</span>
+        </button>
+        <button class="tool-btn" data-tool="pan" id="toolPanBtn" title="Pan Canvas (H / Space+Drag)">
+          <i class="fas fa-hand-paper"></i>
+          <span class="hotkey-badge">H</span>
+        </button>
+        <button class="tool-btn" data-tool="measure" id="toolMeasureBtn" title="Measure Δt & Δf (M)">
+          <i class="fas fa-ruler-combined"></i>
+          <span class="hotkey-badge">M</span>
+        </button>
+      </div>
+
+      <!-- Quick Class Palette -->
+      <div class="class-quick-picker" id="classQuickPicker">
+        <!-- Dots injected dynamically -->
+      </div>
+    </aside>
+
+    <!-- Center Canvas Area with Dual Axis Rulers -->
+    <section class="viewport-center">
+      <div class="canvas-viewport-wrapper">
+        <!-- Top Time Axis Ruler -->
+        <div class="ruler-top">
+          <canvas id="rulerTop"></canvas>
+        </div>
+
+        <div class="canvas-middle-row">
+          <!-- Left Frequency Axis Ruler -->
+          <div class="ruler-left">
+            <canvas id="rulerLeft"></canvas>
+          </div>
+
+          <!-- Main Interactive Spectrogram Canvas & Comparison Viewport -->
+          <div class="main-canvas-area" id="canvasContainer">
+            <!-- Floating / Docked Auto-Label Proposal Review Bar -->
+            <div id="proposalReviewBar" class="proposal-review-bar" style="display: none;">
+              <div class="review-status">
+                <i class="fas fa-magic review-icon"></i>
+                <div>
+                  <div class="review-title">Auto-Label Proposal Review</div>
+                  <div class="review-subtitle">
+                    Chunk <span id="proposalChunkBadge" style="color: var(--accent-cyan); font-weight: 700;">#1</span>:
+                    <span id="proposalCountBadge" style="background: rgba(0, 229, 255, 0.2); padding: 1px 6px; border-radius: 10px; color: #fff; font-weight: 700;">0</span> proposals
+                    (<span id="proposalTotalBadge">0</span> total across all chunks)
+                  </div>
+                </div>
+              </div>
+
+              <!-- Quick Chunk Navigation in Review Bar -->
+              <div class="review-nav-group">
+                <button class="btn btn-sm btn-icon" id="reviewPrevChunkBtn" title="Previous Chunk (D / [)"><i class="fas fa-chevron-left"></i></button>
+                <button class="btn btn-sm btn-icon" id="reviewNextChunkBtn" title="Next Chunk (F / ])"><i class="fas fa-chevron-right"></i></button>
+              </div>
+
+              <!-- Side-by-Side View Mode Toggle -->
+              <button class="btn btn-sm btn-outline active-toggle" id="toggleComparisonViewBtn" title="Toggle Side-by-Side Comparison View (C)">
+                <i class="fas fa-columns"></i> <span id="comparisonToggleText">Side-by-Side</span>
+              </button>
+
+              <div class="review-actions">
+                <button class="btn btn-sm" id="acceptChunkProposalsBtn" style="background: #10b981; color: #fff; border: none;" title="Agree / Accept all proposals on this chunk (Y)">
+                  <i class="fas fa-check"></i> Agree Image (Y)
+                </button>
+                <button class="btn btn-sm" id="rejectChunkProposalsBtn" style="background: #ef4444; color: #fff; border: none;" title="Decline / Reject all proposals on this chunk (N)">
+                  <i class="fas fa-times"></i> Decline Image (N)
+                </button>
+                <button class="btn btn-sm btn-primary" id="acceptAllProposalsBtn" title="Agree / Accept all proposals across all chunks">
+                  <i class="fas fa-check-double"></i> Agree All
+                </button>
+                <button class="btn btn-sm btn-outline" id="rejectAllProposalsBtn" title="Decline / Discard all proposals">
+                  <i class="fas fa-ban"></i> Decline All
+                </button>
+              </div>
+            </div>
+
+            <!-- Single Canvas Mode Wrapper -->
+            <div class="single-canvas-wrapper" id="singleCanvasWrapper">
+              <canvas id="spectrogramCanvas"></canvas>
+            </div>
+
+            <!-- Side-by-Side Comparison Mode Split Wrapper -->
+            <div class="comparison-split-wrapper" id="comparisonSplitWrapper" style="display: none;">
+              <!-- Left Pane: BEFORE (Original / Current Labels) -->
+              <div class="comparison-pane before-pane" id="comparisonPaneBefore">
+                <div class="pane-header">
+                  <span class="pane-badge before-badge">
+                    <i class="fas fa-history"></i> BEFORE: Current Labels
+                  </span>
+                  <span class="pane-count" id="beforeCountBadge">0 boxes</span>
+                </div>
+                <div class="pane-canvas-container">
+                  <canvas id="spectrogramCanvasBefore"></canvas>
+                </div>
+              </div>
+
+              <!-- Split Center Divider -->
+              <div class="comparison-divider">
+                <div class="divider-line"></div>
+                <div class="divider-badge"><i class="fas fa-exchange-alt"></i> VS</div>
+                <div class="divider-line"></div>
+              </div>
+
+              <!-- Right Pane: AFTER (Auto-Label Proposed) -->
+              <div class="comparison-pane after-pane" id="comparisonPaneAfter">
+                <div class="pane-header">
+                  <span class="pane-badge after-badge">
+                    <i class="fas fa-magic"></i> AFTER: Auto-Label Proposed
+                  </span>
+                  <span class="pane-count" id="afterCountBadge">+0 proposed</span>
+                </div>
+                <div class="pane-canvas-container">
+                  <canvas id="spectrogramCanvasAfter"></canvas>
+                </div>
+              </div>
+            </div>
+
+            <!-- Floating View Controls -->
+            <div class="canvas-floating-controls">
+              <button class="nav-btn" id="zoomInBtn" title="Zoom In (+)"><i class="fas fa-plus"></i></button>
+              <button class="nav-btn" id="zoomOutBtn" title="Zoom Out (-)"><i class="fas fa-minus"></i></button>
+              <button class="nav-btn" id="zoomFitBtn" title="Fit to Screen (F)"><i class="fas fa-expand"></i></button>
+              <button class="nav-btn" id="zoomResetBtn" title="Reset (1:1)"><i
+                  class="fas fa-compress-arrows-alt"></i></button>
+            </div>
+
+            <!-- Live HUD / Cursor Coordinates -->
+            <div class="canvas-hud">
+              <div class="hud-item">
+                <i class="fas fa-clock"></i> Time: <span id="hudTime">0.000 µs</span>
+              </div>
+              <div class="hud-item">
+                <i class="fas fa-wave-square"></i> Freq: <span id="hudFreq">0.000 MHz</span>
+              </div>
+            </div>
+
+            <!-- In-Canvas Loader -->
+            <div class="canvas-loader" id="canvasLoader">
+              <div class="spinner"></div>
+              <span style="font-size: 12px; color: var(--text-secondary);">Rendering STFT Spectrogram...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Filmstrip Timeline -->
+      <div class="filmstrip-container" id="filmstripContainer">
+        <!-- Chunks filmstrip items injected dynamically -->
+      </div>
+    </section>
+
+    <!-- Right Sidebar -->
+    <aside class="sidebar-right">
+      <div class="sidebar-tabs">
+        <button class="sidebar-tab-btn" data-tab="classes" title="Signal Classes">
+          <i class="fas fa-tags"></i> Classes
+        </button>
+        <button class="sidebar-tab-btn" data-tab="objects" title="Annotated Objects">
+          <i class="fas fa-shapes"></i> Objects
+        </button>
+        <button class="sidebar-tab-btn active" data-tab="bdw" title="RF / BDW Parameters">
+          <i class="fas fa-satellite-dish"></i> BDW Inspector
+        </button>
+        <button class="sidebar-tab-btn" data-tab="stft" title="STFT Settings">
+          <i class="fas fa-sliders-h"></i> STFT
+        </button>
+      </div>
+
+      <!-- Tab 1: Classes & Labels -->
+      <div class="sidebar-tab-content" id="tabContent_classes">
+        <div class="panel-card">
+          <div class="panel-card-title">
+            <span>Signal Classes</span>
+            <button class="btn btn-primary" id="addNewClassBtn" style="padding: 3px 8px; font-size: 11px;">
+              <i class="fas fa-plus"></i> New Class
+            </button>
+          </div>
+          <div id="classesListContainer">
+            <!-- Classes injected dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Objects List -->
+      <div class="sidebar-tab-content" id="tabContent_objects">
+        <div class="panel-card">
+          <div class="panel-card-title">
+            <span>Current Chunk Boxes</span>
+            <span class="file-info-tag" id="objectsCountBadge">0 items</span>
+          </div>
+          <div id="objectsListContainer">
+            <!-- Object rows injected dynamically -->
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 3: BDW / RF Parameter Inspector -->
+      <div class="sidebar-tab-content active" id="tabContent_bdw">
+        <div class="panel-card">
+          <div class="panel-card-title">
+            <span>Live RF Metrics</span>
+            <span style="color: var(--accent-cyan); font-size: 11px; font-family: var(--font-mono);">BDW Schema</span>
+          </div>
+          <div class="bdw-grid">
+            <div class="bdw-stat-card">
+              <div class="bdw-stat-label">TOA (Arrival)</div>
+              <div class="bdw-stat-value" id="statToa">--</div>
+            </div>
+            <div class="bdw-stat-card">
+              <div class="bdw-stat-label">Pulse Width (PW)</div>
+              <div class="bdw-stat-value" id="statPw">--</div>
+            </div>
+            <div class="bdw-stat-card">
+              <div class="bdw-stat-label">Center Freq (FC)</div>
+              <div class="bdw-stat-value" id="statFc">--</div>
+            </div>
+            <div class="bdw-stat-card">
+              <div class="bdw-stat-label">Bandwidth (BW)</div>
+              <div class="bdw-stat-value" id="statBw">--</div>
+            </div>
+            <div class="bdw-stat-card" style="grid-column: span 2;">
+              <div class="bdw-stat-label">Estimated SNR (dB)</div>
+              <div class="bdw-stat-value" id="statSnr" style="color: var(--accent-green);">--</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-card">
+          <div class="panel-card-title">
+            <span>Edit BDW Attributes</span>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">TOA (µs)</label>
+              <input type="number" step="0.1" class="form-input form-input-mono" id="bdwToa">
+            </div>
+            <div class="form-group">
+              <label class="form-label">TOD (µs)</label>
+              <input type="number" step="0.1" class="form-input form-input-mono" id="bdwTod">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">FC (MHz)</label>
+              <input type="number" step="0.01" class="form-input form-input-mono" id="bdwFc">
+            </div>
+            <div class="form-group">
+              <label class="form-label">BW (MHz)</label>
+              <input type="number" step="0.01" class="form-input form-input-mono" id="bdwBw">
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">SNR (dB)</label>
+            <input type="number" step="0.1" class="form-input form-input-mono" id="bdwSnr">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Type of Signal</label>
+            <input type="text" class="form-input" id="bdwSignalType" placeholder="e.g. OFDM, FMCW, QPSK, Chirp">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Protocol</label>
+            <input type="text" class="form-input" id="bdwProtocol" placeholder="e.g. 5G NR, 802.11ax, Bluetooth">
+          </div>
+
+          <div style="margin-top: 14px; display: flex; justify-content: flex-end;">
+            <button class="btn btn-danger" id="deleteActiveBoxBtn" disabled>
+              <i class="fas fa-trash"></i> Delete Box
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 4: STFT & Spectrogram Tuning -->
+      <div class="sidebar-tab-content" id="tabContent_stft">
+        <div class="panel-card">
+          <div class="panel-card-title">
+            <span>STFT / Spectrogram Tuning</span>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Colormap</label>
+            <select class="form-select" id="stftColormap">
+              <option value="turbo">Turbo (Recommended)</option>
+              <option value="hot">Hot (cv2.COLORMAP_HOT)</option>
+              <option value="viridis">Viridis</option>
+              <option value="plasma">Plasma</option>
+              <option value="magma">Magma</option>
+              <option value="inferno">Inferno</option>
+              <option value="jet">Jet</option>
+              <option value="gray">Grayscale</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">FFT Size (NFFT)</label>
+            <select class="form-select" id="stftNfft">
+              <option value="256">256</option>
+              <option value="512">512</option>
+              <option value="1024" selected>1024</option>
+              <option value="2048">2048</option>
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+              <option value="16384">16384</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Chunk Duration (ms)</label>
+              <input type="number" step="1.0" class="form-input form-input-mono" id="stftChunkDuration" value="30.0">
+            </div>
+            <div class="form-group">
+              <label class="form-label">Overlap Duration (ms)</label>
+              <input type="number" step="1.0" class="form-input form-input-mono" id="stftOverlapDuration" value="10.0">
+            </div>
+          </div>
+          <button class="btn btn-primary" id="applyStftBtn" style="width: 100%; margin-top: 8px;">
+            <i class="fas fa-sync-alt"></i> Recompute Spectrograms
+          </button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- Upload Modal -->
+  <div class="modal-overlay" id="uploadModal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fas fa-file-upload" style="color: var(--accent-cyan);"></i> Upload RF Capture
+          (.h5 / .iq)</div>
+        <button class="icon-btn" id="closeUploadBtn"><i class="fas fa-times"></i></button>
+      </div>
+      <div class="dropzone" id="uploadDropzone">
+        <div class="dropzone-icon"><i class="fas fa-cloud-upload-alt"></i></div>
+        <div class="dropzone-text" style="font-weight: 600; margin-bottom: 4px;">Click or Drag & Drop .h5 or .iq file
+          here</div>
+        <div style="font-size: 11px; color: var(--text-muted);">Supports HDF5, int16 binary, and float32 binary IQ
+          formats</div>
+        <input type="file" id="fileInput" accept=".h5,.hdf5,.iq,.bin" style="display: none;">
+      </div>
+      <div style="margin-top: 16px;">
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Frequency Center (Fc, MHz)</label>
+            <input type="number" step="0.1" class="form-input form-input-mono" id="uploadCenterFreq" value="2400.0"
+              placeholder="e.g. 2400.0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Frequency Sample (Fs)</label>
+            <select class="form-select" id="uploadFs">
+              <option value="245760000">245.76 MHz (5G / Wideband)</option>
+              <option value="61440000" selected>61.44 MHz (LTE / Standard)</option>
+              <option value="30720000">30.72 MHz (LTE Narrowband)</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">IQ Sample Format</label>
+            <select class="form-select" id="uploadFormat">
+              <option value="float32" selected>float32 (Interleaved / Complex)</option>
+              <option value="int16">int16 (Interleaved Signed Short)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Chunk Duration (ms)</label>
+            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadChunkDur" value="30.0">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Overlap Duration (ms)</label>
+            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadOverlapDur" value="10.0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">FFT Size (NFFT)</label>
+            <select class="form-select" id="uploadNfft">
+              <option value="256">256</option>
+              <option value="512">512</option>
+              <option value="1024" selected>1024</option>
+              <option value="2048">2048</option>
+              <option value="4096">4096</option>
+              <option value="8192">8192</option>
+              <option value="16384">16384</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Colormap</label>
+            <select class="form-select" id="uploadColormap">
+              <option value="turbo" selected>Turbo (Recommended)</option>
+              <option value="hot">Hot (cv2.COLORMAP_HOT)</option>
+              <option value="viridis">Viridis</option>
+              <option value="plasma">Plasma</option>
+              <option value="magma">Magma</option>
+              <option value="inferno">Inferno</option>
+              <option value="jet">Jet</option>
+              <option value="gray">Grayscale</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Window Function</label>
+            <select class="form-select" id="uploadWindow">
+              <option value="hann" selected>Hann</option>
+              <option value="hamming">Hamming</option>
+              <option value="blackman">Blackman</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="submitUploadBtn">Upload & Load Dataset</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sample Generator Modal -->
+  <div class="modal-overlay" id="sampleModal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fas fa-bolt" style="color: var(--accent-orange);"></i> Generate Benchmark RF
+          Dataset</div>
+        <button class="icon-btn" id="closeSampleBtn"><i class="fas fa-times"></i></button>
+      </div>
+      <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
+        Instantly generates synthetic RF signals including FMCW Radar Chirps, WiFi 802.11ax OFDM bursts, Bluetooth FHSS
+        pulses, and realistic noise floor.
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Sampling Rate (Fs)</label>
+          <select class="form-select" id="sampleFs">
+            <option value="245760000">245.76 MHz (Wideband)</option>
+            <option value="61440000" selected>61.44 MHz (Standard)</option>
+            <option value="30720000">30.72 MHz (Narrowband)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Data Format</label>
+          <select class="form-select" id="sampleFormat">
+            <option value="float32" selected>float32</option>
+            <option value="int16">int16</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Output Container</label>
+          <select class="form-select" id="sampleOutFormat">
+            <option value="h5" selected>.h5 (HDF5)</option>
+            <option value="iq">.iq (Raw Binary)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Duration (ms)</label>
+          <input type="number" step="10" class="form-input form-input-mono" id="sampleDuration" value="100.0">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Chunk Duration (ms)</label>
+          <input type="number" step="1.0" class="form-input form-input-mono" id="sampleChunkDur" value="30.0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Overlap Duration (ms)</label>
+          <input type="number" step="1.0" class="form-input form-input-mono" id="sampleOverlapDur" value="10.0">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" id="generateSampleSubmitBtn">Generate & Load</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Waterfall Video Player & Export Modal -->
+  <div class="modal-overlay" id="waterfallModal">
+    <div class="modal-dialog" style="max-width: 860px; width: 90vw;">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fas fa-film" style="color: var(--accent-orange);"></i> Continuous Waterfall
+          Video Player</div>
+        <button class="icon-btn" id="closeWaterfallBtn"><i class="fas fa-times"></i></button>
+      </div>
+      <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 12px;">
+        High-definition MP4 continuous waterfall video rendered across all overlapping spectrogram frames with live HUD
+        annotations.
+      </div>
+
+      <!-- Video Container -->
+      <div
+        style="background: #000; border: 1px solid var(--border-color); border-radius: var(--radius-md); overflow: hidden; position: relative; margin-bottom: 14px; min-height: 380px; display: flex; align-items: center; justify-content: center;">
+        <video id="waterfallVideoPlayer" controls autoplay loop
+          style="width: 100%; height: auto; max-height: 480px; display: block;"></video>
+        <div id="waterfallLoadingSpinner"
+          style="position: absolute; display: none; text-align: center; color: var(--accent-cyan);">
+          <div class="spinner" style="width: 36px; height: 36px; margin: 0 auto 8px auto;"></div>
+          <div style="font-size: 12px; font-weight: 600;">Rendering Waterfall Video Frames...</div>
+        </div>
+      </div>
+
+      <!-- Video Controls Bar -->
+      <div class="form-row" style="align-items: center;">
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Playback Frame Rate (FPS)</label>
+          <select class="form-select" id="waterfallFpsSelect">
+            <option value="5">5 FPS (Slow Motion Analysis)</option>
+            <option value="10" selected>10 FPS (Standard)</option>
+            <option value="15">15 FPS (Smooth Fast)</option>
+            <option value="30">30 FPS (High Speed)</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Video Actions</label>
+          <div style="display: flex; gap: 8px;">
+            <button class="btn btn-secondary" id="reRenderWaterfallBtn" style="flex: 1;">
+              <i class="fas fa-sync-alt"></i> Re-Render Video
+            </button>
+            <a class="btn btn-primary" id="downloadWaterfallMp4Btn" href="/api/export/waterfall_video" download
+              style="flex: 1; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 6px;">
+              <i class="fas fa-download"></i> Download MP4
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Auto-Label Modal (CFAR + ONNX AI) -->
+  <div class="modal-overlay" id="autoLabelModal">
+    <div class="modal-dialog" style="max-width: 680px; width: 90vw;">
+      <div class="modal-header">
+        <div class="modal-title">
+          <i class="fas fa-magic" style="color: #a855f7;"></i> Auto-Label RF Spectrograms
+        </div>
+        <button class="icon-btn" id="closeAutoLabelBtn"><i class="fas fa-times"></i></button>
+      </div>
+
+      <!-- Tab Navigation -->
+      <div style="display: flex; gap: 8px; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">
+        <button class="tab-btn active" id="tabCfarBtn" style="flex: 1; padding: 10px; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">
+          <i class="fas fa-wave-square"></i> Option 1: CFAR RF Detector
+        </button>
+        <button class="tab-btn" id="tabOnnxBtn" style="flex: 1; padding: 10px; border-radius: var(--radius-sm); font-weight: 600; cursor: pointer;">
+          <i class="fas fa-brain"></i> Option 2: AI Model (ONNX)
+        </button>
+      </div>
+
+      <!-- Tab 1: CFAR Form -->
+      <div id="tabCfarContent">
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
+          Detects RF signals using <strong>2D Cell-Averaging CFAR (CA-CFAR)</strong> with guard/training kernel convolution and morphological contour extraction.
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Target Signal Class</label>
+            <select class="form-select" id="cfarClassSelect"></select>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Threshold Factor ($\alpha$): <span id="cfarThresholdFactorVal" style="color: var(--accent-cyan); font-weight: 700;">1.10</span></label>
+            <input type="number" class="form-input" id="cfarThresholdFactorInput" value="1.10" step="0.05" min="1.01" max="5.00">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Guard Cells (Rows &times; Cols)</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="number" class="form-input" id="cfarGuardRowsInput" value="12" min="1" max="100" placeholder="Rows (12)" title="Guard Rows">
+              <input type="number" class="form-input" id="cfarGuardColsInput" value="25" min="1" max="100" placeholder="Cols (25)" title="Guard Cols">
+            </div>
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Training Cells (Rows &times; Cols)</label>
+            <div style="display: flex; gap: 8px;">
+              <input type="number" class="form-input" id="cfarTrainRowsInput" value="15" min="1" max="100" placeholder="Rows (15)" title="Train Rows">
+              <input type="number" class="form-input" id="cfarTrainColsInput" value="15" min="1" max="100" placeholder="Cols (15)" title="Train Cols">
+            </div>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Morphology Kernel (Close)</label>
+            <input type="number" class="form-input" id="cfarMorphKernelInput" value="5" step="2" min="1" max="31">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Min Contour Area (px)</label>
+            <input type="number" class="form-input" id="cfarMinAreaInput" value="20" min="1" max="5000">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Max Proposed Boxes</label>
+            <input type="number" class="form-input" id="cfarMaxBoxesInput" value="32" min="1" max="100">
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: ONNX Model Form -->
+      <div id="tabOnnxContent" style="display: none;">
+        <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 14px;">
+          Upload a trained <code>.onnx</code> model (YOLOv5, YOLOv8, YOLOv11, or generic detector) to run automated inference on spectrograms.
+        </div>
+
+        <!-- ONNX Upload Dropzone -->
+        <div id="onnxDropzone" style="border: 2px dashed var(--accent-cyan); border-radius: var(--radius-md); padding: 20px; text-align: center; background: rgba(0, 229, 255, 0.05); margin-bottom: 14px; cursor: pointer;">
+          <i class="fas fa-cloud-upload-alt" style="font-size: 28px; color: var(--accent-cyan); margin-bottom: 8px;"></i>
+          <div style="font-size: 13px; font-weight: 600; color: #fff;">Click or Drag & Drop .onnx Model File</div>
+          <div style="font-size: 11px; color: var(--text-secondary); margin-top: 4px;">Supports YOLO / ONNX object detection models</div>
+          <input type="file" id="onnxFileInput" accept=".onnx" style="display: none;">
+        </div>
+
+        <!-- ONNX Model Status Card -->
+        <div id="onnxModelCard" style="background: rgba(16, 21, 34, 0.8); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px; display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <span style="font-weight: 700; font-size: 13px; color: var(--accent-cyan);" id="onnxModelName">model.onnx</span>
+            <span class="badge" style="background: #10b981; color: #fff; font-size: 10px; padding: 2px 6px; border-radius: 4px;">ACTIVE</span>
+          </div>
+          <div style="font-size: 11px; color: var(--text-secondary);" id="onnxModelDetails">
+            Input Resolution: 640x640 | Classes: 1
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">Confidence Threshold: <span id="onnxConfValue" style="color: var(--accent-cyan); font-weight: 700;">0.25</span></label>
+            <input type="range" class="form-range" id="onnxConfInput" min="0.05" max="0.95" step="0.05" value="0.25">
+          </div>
+          <div class="form-group" style="flex: 1;">
+            <label class="form-label">NMS IoU Threshold: <span id="onnxIouValue" style="color: var(--accent-cyan); font-weight: 700;">0.45</span></label>
+            <input type="range" class="form-range" id="onnxIouInput" min="0.10" max="0.90" step="0.05" value="0.45">
+          </div>
+        </div>
+
+        <!-- Dynamic Model Classes & Mapping Section -->
+        <div id="onnxClassMappingSection" style="background: rgba(16, 21, 34, 0.6); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 12px 14px; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+            <div>
+              <div style="font-weight: 700; font-size: 12px; color: var(--text-primary);"><i class="fas fa-tags" style="color: var(--accent-cyan);"></i> Model Classes & Annotation Mapping</div>
+              <div style="font-size: 11px; color: var(--text-muted);">Set custom class names or map model predictions to your annotation palette.</div>
+            </div>
+            <button type="button" class="btn btn-secondary btn-sm" id="syncModelClassesBtn" style="font-size: 11px; padding: 4px 10px;" title="Automatically add/sync all model classes into the application palette">
+              <i class="fas fa-plus-circle"></i> Sync to Palette
+            </button>
+          </div>
+          
+          <div id="onnxClassMappingList" style="display: flex; flex-direction: column; gap: 8px; max-height: 220px; overflow-y: auto; padding-right: 4px;">
+            <!-- Rendered dynamically by autolabel.js -->
+          </div>
+
+          <div id="onnxSingleClassFallback" style="display: none; margin-top: 6px;">
+            <label class="form-label">Default Target Class</label>
+            <select class="form-select" id="onnxDefaultClassSelect"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Scope Selector (Common to both) -->
+      <div style="background: rgba(255, 255, 255, 0.03); border-radius: var(--radius-sm); padding: 10px 14px; margin-top: 10px; margin-bottom: 16px;">
+        <label class="form-label" style="margin-bottom: 6px;">Auto-Label Scope</label>
+        <div style="display: flex; gap: 20px; font-size: 12px;">
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="autoLabelScope" value="all" checked> All Spectrogram Images
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="radio" name="autoLabelScope" value="current"> Current Image Only
+          </label>
+        </div>
+      </div>
+
+      <!-- Modal Footer -->
+      <div style="display: flex; justify-content: flex-end; gap: 10px;">
+        <button class="btn btn-secondary" id="cancelAutoLabelBtn">Cancel</button>
+        <button class="btn btn-primary" id="runAutoLabelBtn" style="background: linear-gradient(135deg, #a855f7 0%, #00e5ff 100%); border: none; font-weight: 700;">
+          <i class="fas fa-play"></i> Run Auto-Labeling
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hotkeys Cheat-Sheet Modal -->
+  <div class="modal-overlay" id="hotkeysModal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fas fa-keyboard" style="color: var(--accent-cyan);"></i> Keyboard Shortcuts
+        </div>
+        <button class="icon-btn" id="closeHotkeysBtn"><i class="fas fa-times"></i></button>
+      </div>
+      <table style="width: 100%; font-size: 12px; border-collapse: collapse;">
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700; width: 140px;">N</td>
+          <td>Add New Bounding Box mode</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">V</td>
+          <td>Select / Move Box mode</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">H / Space+Drag</td>
+          <td>Pan Canvas view</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">M</td>
+          <td>Measure Tool (Δt & Δf)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">Delete / Backspace
+          </td>
+          <td>Delete Hovered or Selected Bounding Box</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">D / [ / ←</td>
+          <td>Previous Spectrogram Chunk</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">F / ] / →</td>
+          <td>Next Spectrogram Chunk</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">1 - 9</td>
+          <td>Switch Active Signal Class</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">Ctrl + Z / Ctrl + Y
+          </td>
+          <td>Undo / Redo Box Changes</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">+ / - / Scroll Wheel
+          </td>
+          <td>Zoom In / Out Spectrogram</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">Y</td>
+          <td>Agree / Accept Auto-Label proposals for current image</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">N</td>
+          <td>Decline / Reject Auto-Label proposals for current image</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">C</td>
+          <td>Toggle Side-by-Side / Single Comparison View (during Auto-Label review)</td>
+        </tr>
+        <tr style="border-bottom: 1px solid var(--border-color); height: 28px;">
+          <td style="color: var(--accent-cyan); font-family: var(--font-mono); font-weight: 700;">0 (Zero)</td>
+          <td>Fit Spectrogram to Screen</td>
+        </tr>
+      </table>
+    </div>
+  </div>
+
+  <!-- Global Loader & Progression Overlay -->
+  <div class="modal-overlay" id="globalLoader">
+    <div style="background: rgba(16, 21, 34, 0.95); border: 1px solid rgba(168, 85, 247, 0.6); border-radius: var(--radius-lg); padding: 26px 36px; width: 440px; text-align: center; color: #fff; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.85); backdrop-filter: blur(8px);">
+      <div class="spinner" id="globalLoaderSpinner" style="margin: 0 auto 16px auto; width: 44px; height: 44px; border: 3px solid rgba(168, 85, 247, 0.2); border-top-color: var(--accent-cyan);"></div>
+      <div id="globalLoaderText" style="font-size: 15px; font-weight: 700; margin-bottom: 12px; color: #fff; letter-spacing: 0.3px;">Processing RF Data...</div>
+
+      <!-- Real-Time Progression Bar Container -->
+      <div id="globalProgressBarContainer" style="display: none; margin-top: 14px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; font-size: 12px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px;">
+          <span id="globalProgressDetail" style="font-family: var(--font-mono); color: #cbd5e1;">Chunk 0 / 0</span>
+          <span id="globalProgressPercent" style="font-family: var(--font-mono); color: var(--accent-cyan); font-weight: 700;">0%</span>
+        </div>
+        <div style="width: 100%; height: 10px; background: rgba(255, 255, 255, 0.1); border-radius: 5px; overflow: hidden; position: relative; box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.5);">
+          <div id="globalProgressBarFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #a855f7 0%, #00e5ff 100%); border-radius: 5px; transition: width 0.15s ease; box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);"></div>
+        </div>
+        <div id="globalProgressStats" style="font-size: 11px; color: #94a3b8; margin-top: 10px; font-family: var(--font-mono); display: flex; justify-content: center; align-items: center; gap: 6px;">
+          <i class="fas fa-bolt" style="color: var(--accent-cyan);"></i> <span>0 candidate signals detected so far</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div id="appNotification"
+    style="position: fixed; bottom: 20px; right: 20px; background: rgba(16, 21, 34, 0.95); border: 1px solid var(--accent-cyan); color: #fff; padding: 10px 18px; border-radius: var(--radius-md); font-size: 12px; font-weight: 600; box-shadow: var(--shadow-lg); display: none; z-index: 999;">
+  </div>
+
+  <!-- Script Modules -->
+  <script type="module" src="js/app.js?v=3.6"></script>
+</body>
+
+</html>
