@@ -3,9 +3,11 @@ import json
 import zipfile
 import csv
 from datetime import datetime
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, List, Optional, Tuple, Callable
 import numpy as np
-from backend.rf_processor import RFProcessor
+from backend.rf_processor import RFProcessor, add_awgn
+from backend.logger import logger
+import os
 
 class COCOBDWExporter:
     """
@@ -18,15 +20,45 @@ class COCOBDWExporter:
     def build_coco_json(rf_processor: RFProcessor,
                         classes: List[Dict[str, Any]],
                         annotations_by_chunk: Dict[int, List[Dict[str, Any]]],
+                        drone_name: Optional[str] = None,
                         img_width: int = 1024,
-                        img_height: int = 512) -> Dict[str, Any]:
+                        img_height: int = 512,
+                        img_format: str = "png",
+                        export_snr_db: Optional[float] = None) -> Dict[str, Any]:
         """
         Builds COCO format dictionary containing RF session metadata and BDW parameters.
         """
         summary = rf_processor.get_summary()
+        effective_drone = drone_name or summary.get("drone_name") or "DJI-MAVIC-PRO-3"
+        clean_ext = img_format.lower().lstrip('.')
+        if clean_ext not in ["png", "jpg", "jpeg"]:
+            clean_ext = "png"
         now_str = datetime.utcnow().isoformat() + "Z"
 
         # 1. Info & Session Parameters
+        session_params = {
+            "dataset_format": "coco",
+            "drone_name": effective_drone,
+            "data_source": summary["source_filename"],
+            "source_format": summary["source_format"],
+            "fs_hz": summary["fs_hz"],
+            "fs_mhz": summary["fs_mhz"],
+            "center_freq_hz": summary["center_freq_hz"],
+            "center_freq_mhz": summary["center_freq_mhz"],
+            "img_width": img_width,
+            "img_height": img_height,
+            "img_format": clean_ext,
+            "total_samples": summary["total_samples"],
+            "total_duration_ms": summary["total_duration_ms"],
+            "total_duration_us": summary["total_duration_us"],
+            "chunk_duration_ms": summary["chunk_duration_ms"],
+            "num_chunks": summary["num_chunks"],
+            "stft_config": summary["stft_config"]
+        }
+        if export_snr_db is not None:
+            session_params["export_snr_db"] = float(export_snr_db)
+            session_params["awgn_applied_on_export"] = True
+
         info = {
             "description": "RF Spectrogram Dataset with BDW Signal Parameters",
             "url": "https://github.com/google/antigravity",
@@ -34,20 +66,7 @@ class COCOBDWExporter:
             "year": datetime.utcnow().year,
             "contributor": "CVAT RF Spectrogram Labelling Tool",
             "date_created": now_str,
-            "session_parameters": {
-                "data_source": summary["source_filename"],
-                "source_format": summary["source_format"],
-                "fs_hz": summary["fs_hz"],
-                "fs_mhz": summary["fs_mhz"],
-                "center_freq_hz": summary["center_freq_hz"],
-                "center_freq_mhz": summary["center_freq_mhz"],
-                "total_samples": summary["total_samples"],
-                "total_duration_ms": summary["total_duration_ms"],
-                "total_duration_us": summary["total_duration_us"],
-                "chunk_duration_ms": summary["chunk_duration_ms"],
-                "num_chunks": summary["num_chunks"],
-                "stft_config": summary["stft_config"]
-            }
+            "session_parameters": session_params
         }
 
         # 2. Categories
@@ -68,11 +87,13 @@ class COCOBDWExporter:
         # 3. Images (Chunks)
         images = []
         for chunk in rf_processor.chunks_meta:
-            iq_fname = f"{chunk['file_name'].rsplit('.', 1)[0]}.iq"
+            c_id = chunk["id"]
+            img_fname = rf_processor.get_formatted_filename(chunk_id=c_id, extension=clean_ext, drone_name=effective_drone)
+            iq_fname = rf_processor.get_formatted_filename(chunk_id=c_id, extension="iq", drone_name=effective_drone)
             images.append({
-                "id": chunk["id"] + 1,  # 1-indexed for standard COCO
-                "chunk_index": chunk["id"],
-                "file_name": chunk["file_name"],
+                "id": c_id + 1,  # 1-indexed for standard COCO
+                "chunk_index": c_id,
+                "file_name": img_fname,
                 "iq_file_name": iq_fname,
                 "width": img_width,
                 "height": img_height,
@@ -106,17 +127,28 @@ class COCOBDWExporter:
                     "protocol": "Generic"
                 })
 
+                box_src_w = float(box.get("img_width") or rf_processor.render_width or 1024)
+                box_src_h = float(box.get("img_height") or rf_processor.render_height or 512)
+
                 x = float(box["x"])
                 y = float(box["y"])
                 w = float(box["width"])
                 h = float(box["height"])
 
+                scale_x = img_width / box_src_w if box_src_w > 0 else 1.0
+                scale_y = img_height / box_src_h if box_src_h > 0 else 1.0
+
+                exp_x = round(x * scale_x, 2)
+                exp_y = round(y * scale_y, 2)
+                exp_w = round(w * scale_x, 2)
+                exp_h = round(h * scale_y, 2)
+
                 # COCO polygon segmentation
                 segmentation = [[
-                    x, y,
-                    x + w, y,
-                    x + w, y + h,
-                    x, y + h
+                    exp_x, exp_y,
+                    exp_x + exp_w, exp_y,
+                    exp_x + exp_w, exp_y + exp_h,
+                    exp_x, exp_y + exp_h
                 ]]
 
                 # Calculate or use existing BDW parameters
@@ -126,18 +158,19 @@ class COCOBDWExporter:
                     bdw_params = rf_processor.calculate_bdw_parameters(
                         chunk_id=chunk_id,
                         bbox=[x, y, w, h],
-                        img_width=img_width,
-                        img_height=img_height,
+                        img_width=int(box_src_w),
+                        img_height=int(box_src_h),
                         signal_type=cat_info["type_of_signal"],
                         protocol=cat_info["protocol"]
                     )
 
+                snr_value = float(export_snr_db) if export_snr_db is not None else bdw_params.get("snr_db", 0.0)
                 coco_annotations.append({
                     "id": annotation_counter,
                     "image_id": image_id,
                     "category_id": cat_id,
-                    "bbox": [round(x, 2), round(y, 2), round(w, 2), round(h, 2)],
-                    "area": round(w * h, 2),
+                    "bbox": [exp_x, exp_y, exp_w, exp_h],
+                    "area": round(exp_w * exp_h, 2),
                     "segmentation": segmentation,
                     "iscrowd": 0,
                     "bdw": {
@@ -148,7 +181,7 @@ class COCOBDWExporter:
                         "bw_mhz": bdw_params.get("bw_mhz", 0.0),
                         "freq_low_mhz": bdw_params.get("freq_low_mhz", 0.0),
                         "freq_high_mhz": bdw_params.get("freq_high_mhz", 0.0),
-                        "snr_db": bdw_params.get("snr_db", 0.0),
+                        "snr_db": round(snr_value, 1),
                         "type_of_signal": bdw_params.get("type_of_signal", cat_info["type_of_signal"]),
                         "protocol": bdw_params.get("protocol", cat_info["protocol"]),
                         "data_source": bdw_params.get("data_source", summary["source_filename"])
@@ -156,106 +189,235 @@ class COCOBDWExporter:
                 })
                 annotation_counter += 1
 
+        logger.info(f"Built COCO JSON: {len(images)} images, {len(coco_annotations)} annotations across {len(categories)} categories.")
         return {
             "info": info,
             "licenses": [{"id": 1, "name": "Antigravity RF Dataset License", "url": ""}],
-            "categories": categories,
             "images": images,
-            "annotations": coco_annotations
+            "annotations": coco_annotations,
+            "categories": categories
         }
 
     @staticmethod
-    def generate_zip_bundle(rf_processor: RFProcessor,
-                            classes: List[Dict[str, Any]],
-                            annotations_by_chunk: Dict[int, List[Dict[str, Any]]],
-                            img_width: int = 1024,
-                            img_height: int = 512,
-                            include_iq: bool = False) -> bytes:
+    def generate_zip_bundle(
+        rf_processor: RFProcessor,
+        classes: List[Dict[str, Any]],
+        annotations_by_chunk: Dict[int, List[Dict[str, Any]]],
+        drone_name: Optional[str] = None,
+        img_width: int = 1024,
+        img_height: int = 512,
+        img_format: str = "png",
+        include_images: bool = True,
+        include_coco_json: bool = True,
+        include_csv: bool = True,
+        include_iq: bool = False,
+        include_video: bool = False,
+        include_metadata: bool = True,
+        export_snr_db: Optional[float] = None,
+        progress_callback: Optional[Callable[[int, str, str, str], None]] = None
+    ) -> bytes:
         """
-        Creates a full ZIP download containing spectrogram PNG images,
-        COCO JSON with BDW parameters, CSV summary report, and optionally
-        chunked raw .iq binary files.
+        Creates a complete dataset ZIP bundle containing selectable components:
+        - annotations_coco_bdw.json (COCO format)
+        - spectrograms/*.png (or .jpg)
+        - signal_parameters_bdw.csv
+        - (optional) metadata.json
+        - (optional) iq/*.iq (raw IQ chunks with optional AWGN)
+        - (optional) video/*.mp4 (waterfall video)
+        All named according to standard format.
         """
-        coco_data = COCOBDWExporter.build_coco_json(
-            rf_processor=rf_processor,
-            classes=classes,
-            annotations_by_chunk=annotations_by_chunk,
-            img_width=img_width,
-            img_height=img_height
-        )
+        import concurrent.futures
+        import threading
+
+        summary = rf_processor.get_summary()
+        effective_drone = drone_name or summary.get("drone_name") or "DJI-MAVIC-PRO-3"
+        clean_ext = img_format.lower().lstrip('.')
+        if clean_ext not in ["jpg", "jpeg", "png"]:
+            clean_ext = "png"
+
+        if progress_callback:
+            progress_callback(2, "metadata", "Initializing COCO export package...", "Preparing annotations JSON & metadata")
 
         zip_buffer = io.BytesIO()
 
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
-            # 1. Write COCO JSON
-            coco_json_str = json.dumps(coco_data, indent=2)
-            zip_file.writestr("annotations/annotations_coco.json", coco_json_str)
+            # 1. Add COCO JSON if selected
+            coco_json_dict = COCOBDWExporter.build_coco_json(
+                rf_processor=rf_processor,
+                classes=classes,
+                annotations_by_chunk=annotations_by_chunk,
+                export_snr_db=export_snr_db,
+                drone_name=effective_drone,
+                img_width=img_width,
+                img_height=img_height,
+                img_format=clean_ext
+            )
+            if include_coco_json:
+                coco_json_str = json.dumps(coco_json_dict, indent=2)
+                zip_file.writestr("annotations_coco_bdw.json", coco_json_str)
 
-            # 2. Write Metadata JSON
-            session_params = dict(coco_data["info"]["session_parameters"])
-            session_params["include_iq_chunks"] = include_iq
-            metadata_json_str = json.dumps(session_params, indent=2)
-            zip_file.writestr("metadata.json", metadata_json_str)
+            # 2. Add Metadata JSON if selected
+            if include_metadata:
+                session_params = dict(coco_json_dict.get("info", {}).get("session_parameters", {}))
+                session_params["include_images"] = include_images
+                session_params["include_coco_json"] = include_coco_json
+                session_params["include_csv"] = include_csv
+                session_params["include_iq_chunks"] = include_iq
+                session_params["include_video"] = include_video
+                if export_snr_db is not None:
+                    session_params["export_snr_db"] = float(export_snr_db)
+                    session_params["awgn_applied_on_export"] = True
+                zip_file.writestr("metadata.json", json.dumps(session_params, indent=2))
 
-            # 3. Write CSV BDW summary
-            csv_buf = io.StringIO()
-            csv_writer = csv.writer(csv_buf)
-            csv_writer.writerow([
-                "Annotation_ID", "Image_File", "IQ_File", "Chunk_ID", "Category", "Type_of_Signal",
-                "Protocol", "TOA_us", "TOD_us", "PW_us", "FC_MHz", "BW_MHz",
-                "Freq_Low_MHz", "Freq_High_MHz", "SNR_dB", "BBox_X", "BBox_Y", "BBox_W", "BBox_H"
-            ])
-
-            cat_map = {c["id"]: c["name"] for c in coco_data["categories"]}
-            img_map = {img["id"]: img["file_name"] for img in coco_data["images"]}
-            iq_map = {img["id"]: img.get("iq_file_name", "") for img in coco_data["images"]}
-
-            for ann in coco_data["annotations"]:
-                bdw = ann["bdw"]
-                bbox = ann["bbox"]
+            # 3. Add CSV Summary if selected
+            if include_csv:
+                csv_buf = io.StringIO()
+                csv_writer = csv.writer(csv_buf)
                 csv_writer.writerow([
-                    ann["id"],
-                    img_map.get(ann["image_id"], ""),
-                    iq_map.get(ann["image_id"], ""),
-                    ann["image_id"] - 1,
-                    cat_map.get(ann["category_id"], "Unknown"),
-                    bdw.get("type_of_signal", ""),
-                    bdw.get("protocol", ""),
-                    bdw.get("toa_us", ""),
-                    bdw.get("tod_us", ""),
-                    bdw.get("pw_us", ""),
-                    bdw.get("fc_mhz", ""),
-                    bdw.get("bw_mhz", ""),
-                    bdw.get("freq_low_mhz", ""),
-                    bdw.get("freq_high_mhz", ""),
-                    bdw.get("snr_db", ""),
-                    bbox[0], bbox[1], bbox[2], bbox[3]
+                    "Annotation_ID", "Chunk_ID", "File_Name", "IQ_File_Name", "Drone_Name",
+                    "Category_ID", "Category_Name", "Type_of_Signal", "Protocol",
+                    "TOA_us", "TOD_us", "PW_us", "FC_MHz", "BW_MHz",
+                    "Freq_Low_MHz", "Freq_High_MHz", "SNR_dB",
+                    "BBox_X", "BBox_Y", "BBox_W", "BBox_H", "Data_Source"
                 ])
 
-            zip_file.writestr("signal_parameters_bdw.csv", csv_buf.getvalue())
+                for ann in coco_json_dict["annotations"]:
+                    bdw = ann.get("bdw", {})
+                    bbox = ann.get("bbox", [0, 0, 0, 0])
+                    matching_img = next((img for img in coco_json_dict["images"] if img["id"] == ann["image_id"]), None)
+                    fname = matching_img["file_name"] if matching_img else f"chunk_{ann['image_id']-1}.{clean_ext}"
+                    iq_fname = matching_img.get("iq_file_name", "") if matching_img else ""
+                    matching_cat = next((c for c in coco_json_dict["categories"] if c["id"] == ann["category_id"]), {})
 
-            # 4. Render and write all Spectrogram Images
-            for chunk in rf_processor.chunks_meta:
-                c_id = chunk["id"]
-                img_bytes, _ = rf_processor.render_spectrogram_image(
-                    chunk_id=c_id,
-                    width=img_width,
-                    height=img_height
-                )
-                zip_file.writestr(f"images/{chunk['file_name']}", img_bytes)
+                    csv_writer.writerow([
+                        ann["id"],
+                        ann["image_id"] - 1,
+                        fname if include_images else "",
+                        iq_fname if include_iq else "",
+                        effective_drone,
+                        ann["category_id"],
+                        matching_cat.get("name", "Unknown"),
+                        bdw.get("type_of_signal", ""),
+                        bdw.get("protocol", ""),
+                        bdw.get("toa_us", ""),
+                        bdw.get("tod_us", ""),
+                        bdw.get("pw_us", ""),
+                        bdw.get("fc_mhz", ""),
+                        bdw.get("bw_mhz", ""),
+                        bdw.get("freq_low_mhz", ""),
+                        bdw.get("freq_high_mhz", ""),
+                        bdw.get("snr_db", ""),
+                        bbox[0], bbox[1], bbox[2], bbox[3],
+                        bdw.get("data_source", "")
+                    ])
 
-            # 5. Optionally write raw .iq chunks
-            if include_iq and rf_processor.iq_data is not None:
+                zip_file.writestr("signal_parameters_bdw.csv", csv_buf.getvalue())
+
+            total_chunks = len(rf_processor.chunks_meta)
+
+            # 4. Render spectrogram images in parallel (if selected)
+            rendered_images = {}
+            if include_images and total_chunks > 0:
+                done_count = 0
+                lock = threading.Lock()
+
+                def _render_task(c):
+                    c_id = c["id"]
+                    img_bytes, _ = rf_processor.render_spectrogram_image(
+                        chunk_id=c_id,
+                        width=img_width,
+                        height=img_height,
+                        image_format=clean_ext,
+                        target_snr_db=export_snr_db
+                    )
+                    return c_id, img_bytes
+
+                max_workers = min(os.cpu_count() or 4, 8)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(_render_task, chunk) for chunk in rf_processor.chunks_meta]
+                    for f in concurrent.futures.as_completed(futures):
+                        c_id, img_bytes = f.result()
+                        rendered_images[c_id] = img_bytes
+                        with lock:
+                            done_count += 1
+                            pct = 5 + int(55.0 * (done_count / max(1, total_chunks)))
+                            if progress_callback:
+                                snr_txt = f" | SNR: {export_snr_db:.1f} dB" if export_snr_db is not None else ""
+                                progress_callback(
+                                    pct,
+                                    "images",
+                                    f"Rendering spectrogram image {done_count} / {total_chunks}",
+                                    f"{img_width}x{img_height} {clean_ext.upper()}{snr_txt}"
+                                )
+
+                # Write rendered images into ZIP
                 for chunk in rf_processor.chunks_meta:
-                    start_idx = chunk["start_idx"]
-                    end_idx = chunk["end_idx"]
-                    chunk_iq = rf_processor.iq_data[start_idx:end_idx]
-                    # Convert to complex64 bytes (float32 real + float32 imag interleaved)
-                    iq_bytes = chunk_iq.astype(np.complex64).tobytes()
-                    iq_filename = f"{chunk['file_name'].rsplit('.', 1)[0]}.iq"
-                    zip_file.writestr(f"iq/{iq_filename}", iq_bytes)
+                    c_id = chunk["id"]
+                    img_name = rf_processor.get_formatted_filename(chunk_id=c_id, extension=clean_ext, drone_name=effective_drone)
+                    img_bytes = rendered_images.get(c_id)
+                    if img_bytes is None:
+                        img_bytes, _ = rf_processor.render_spectrogram_image(
+                            chunk_id=c_id,
+                            width=img_width,
+                            height=img_height,
+                            image_format=clean_ext,
+                            target_snr_db=export_snr_db
+                        )
+                    zip_file.writestr(f"spectrograms/{img_name}", img_bytes)
 
-        return zip_buffer.getvalue()
+            # 5. (Optional) Add IQ chunks (Optimized: single-pass AWGN & ZIP_STORED zero-compression)
+            if include_iq and rf_processor.iq_data is not None:
+                global_noisy_iq = None
+                if export_snr_db is not None:
+                    global_noisy_iq = add_awgn(rf_processor.iq_data, snr_db=float(export_snr_db))
+
+                for i, chunk in enumerate(rf_processor.chunks_meta):
+                    c_id = chunk["id"]
+                    meta = rf_processor.chunks_meta[c_id]
+                    if global_noisy_iq is not None:
+                        iq_slice = global_noisy_iq[meta["start_idx"]:meta["end_idx"]]
+                    else:
+                        iq_slice = rf_processor.iq_data[meta["start_idx"]:meta["end_idx"]]
+
+                    iq_name = rf_processor.get_formatted_filename(chunk_id=c_id, extension="iq", drone_name=effective_drone)
+                    zip_file.writestr(f"iq/{iq_name}", iq_slice.tobytes(), compress_type=zipfile.ZIP_STORED)
+                    if progress_callback:
+                        pct = 75 + int(10.0 * ((i + 1) / max(1, total_chunks)))
+                        progress_callback(
+                            pct,
+                            "iq",
+                            f"Slicing raw IQ chunk {i+1} / {total_chunks}",
+                            f"Raw Complex64 ({len(iq_slice):,} samples)"
+                        )
+
+            # 6. (Optional) Add continuous waterfall video
+            if include_video and len(rf_processor.chunks_meta) > 0:
+                if progress_callback:
+                    progress_callback(85, "video", "Rendering continuous waterfall MP4 video...", "Encoding H.264 frames")
+                try:
+                    import tempfile
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp_vid:
+                        tmp_vid_path = tmp_vid.name
+                    rf_processor.render_waterfall_video(
+                        output_filepath=tmp_vid_path,
+                        fps=10.0,
+                        width=img_width,
+                        height=img_height
+                    )
+                    vid_name = f"waterfall_{effective_drone}.mp4"
+                    with open(tmp_vid_path, "rb") as vf:
+                        zip_file.writestr(f"video/{vid_name}", vf.read())
+                    if os.path.exists(tmp_vid_path):
+                        os.remove(tmp_vid_path)
+                except Exception as e:
+                    logger.error(f"Error embedding waterfall video in COCO ZIP: {e}")
+
+            if progress_callback:
+                progress_callback(95, "packaging", "Compressing dataset ZIP archive...", "Finalizing package")
+
+        zip_bytes = zip_buffer.getvalue()
+        logger.info(f"Generated COCO dataset ZIP bundle ({len(zip_bytes)/(1024*1024):.2f} MB, include_iq={include_iq}, include_video={include_video}, export_snr_db={export_snr_db}, drone={effective_drone}, res={img_width}x{img_height}).")
+        return zip_bytes
 
 class COCOBDWImporter:
     """
@@ -304,12 +466,15 @@ class COCOBDWImporter:
                 existing_ids[next_id] = new_cls
                 cat_id_mapping[inc_id] = next_id
 
-        # 2. Build Image ID to Chunk Index map
+        # 2. Build Image ID to Chunk Index and dimensions map
         img_id_to_chunk = {}
+        img_dims = {}
         total_chunks = len(rf_processor.chunks_meta)
 
         for img in coco_data.get("images", []):
             img_id = img.get("id")
+            img_dims[img_id] = (float(img.get("width", 1024)), float(img.get("height", 512)))
+
             if "chunk_index" in img:
                 chunk_id = int(img["chunk_index"])
             elif "file_name" in img:
@@ -336,6 +501,8 @@ class COCOBDWImporter:
         # 3. Parse Annotations
         annotations_by_chunk: Dict[str, List[Dict[str, Any]]] = {}
         total_imported = 0
+        target_w = float(rf_processor.render_width or img_width or 1024)
+        target_h = float(rf_processor.render_height or img_height or 512)
 
         for ann in coco_data.get("annotations", []):
             img_id = ann.get("image_id")
@@ -362,6 +529,15 @@ class COCOBDWImporter:
             else:
                 continue
 
+            raw_w, raw_h = img_dims.get(img_id, (1024.0, 512.0))
+            scale_x = target_w / raw_w if raw_w > 0 else 1.0
+            scale_y = target_h / raw_h if raw_h > 0 else 1.0
+
+            x = round(x * scale_x, 2)
+            y = round(y * scale_y, 2)
+            w = round(w * scale_x, 2)
+            h = round(h * scale_y, 2)
+
             inc_cat_id = ann.get("category_id", 1)
             target_cat_id = cat_id_mapping.get(inc_cat_id, 1)
             target_cat = next((c for c in classes if c["id"] == target_cat_id), None)
@@ -374,8 +550,8 @@ class COCOBDWImporter:
                 bdw = rf_processor.calculate_bdw_parameters(
                     chunk_id=chunk_id,
                     bbox=[x, y, w, h],
-                    img_width=img_width,
-                    img_height=img_height,
+                    img_width=int(target_w),
+                    img_height=int(target_h),
                     signal_type=sig_type,
                     protocol=proto
                 )
@@ -387,6 +563,8 @@ class COCOBDWImporter:
                 "y": round(y, 2),
                 "width": round(w, 2),
                 "height": round(h, 2),
+                "img_width": int(target_w),
+                "img_height": int(target_h),
                 "isLocked": False,
                 "isHidden": False,
                 "bdw": bdw

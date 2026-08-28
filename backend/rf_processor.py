@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import math
 import concurrent.futures
 import numpy as np
@@ -9,8 +10,26 @@ from PIL import Image
 import h5py
 import cv2
 from typing import Dict, Any, Tuple, List, Optional
-
 import threading
+import time
+from backend.logger import logger
+
+def power(iq: np.ndarray) -> float:
+    """Calculates average linear signal power."""
+    return float(np.mean(np.abs(iq) ** 2) + 1e-12)
+
+def add_awgn(iq: np.ndarray, snr_db: float, rng: Optional[np.random.Generator] = None) -> np.ndarray:
+    """
+    Injects Additive White Gaussian Noise (AWGN) to achieve a target SNR in dB.
+    Optimized with direct float32 standard normal distribution generation.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    noise_power = power(iq) / (10 ** (float(snr_db) / 10.0))
+    std = np.sqrt(noise_power / 2.0).astype(np.float32)
+    noise_i = rng.standard_normal(iq.shape, dtype=np.float32) * std
+    noise_q = rng.standard_normal(iq.shape, dtype=np.float32) * std
+    return iq + (noise_i + 1j * noise_q)
 
 class RFProcessor:
     """
@@ -21,6 +40,8 @@ class RFProcessor:
 
     SUPPORTED_FS = [245.76e6, 61.44e6, 30.72e6]
     COLORMAPS = ['turbo', 'hot', 'viridis', 'plasma', 'magma', 'inferno', 'jet', 'gray']
+    SUPPORTED_ENGINES = ['opencv', 'matplotlib']
+    DEFAULT_ENGINE = 'opencv'
     OPENCV_COLORMAPS = {
         'hot': cv2.COLORMAP_HOT,
         'turbo': cv2.COLORMAP_TURBO,
@@ -37,24 +58,34 @@ class RFProcessor:
     def __init__(self,
                  fs: float = 61.44e6,
                  center_freq: float = 2400.0e6,
+                 drone_name: str = "DJI-MAVIC-PRO-3",
                  chunk_duration_ms: float = 30.0,
                  overlap_duration_ms: float = 10.0,
+                 default_snr_db: float = 18.0,
+                 render_width: int = 1024,
+                 render_height: int = 512,
                  nfft: int = 1024,
                  hop_length: Optional[int] = None,
                  window: str = 'hann',
                  colormap: str = 'turbo',
+                 colormap_engine: str = 'opencv',
                  db_min: float = -90.0,
                  db_max: float = 0.0,
                  eager_threshold: int = 20,
                  batch_size: int = 10):
         self.fs = float(fs)
         self.center_freq = float(center_freq)
+        self.drone_name = str(drone_name) if drone_name else "DJI-MAVIC-PRO-3"
         self.chunk_duration_ms = float(chunk_duration_ms)
         self.overlap_duration_ms = float(overlap_duration_ms)
+        self.default_snr_db = float(default_snr_db)
+        self.render_width = int(render_width) if render_width else 1024
+        self.render_height = int(render_height) if render_height else 512
         self.nfft = int(nfft)
         self.hop_length = int(hop_length) if hop_length else int(self.nfft // 4)
         self.window = str(window)
         self.colormap = str(colormap) if colormap in self.COLORMAPS else 'turbo'
+        self.colormap_engine = str(colormap_engine).lower() if colormap_engine and str(colormap_engine).lower() in self.SUPPORTED_ENGINES else 'opencv'
         self.db_min = float(db_min)
         self.db_max = float(db_max)
         self.eager_threshold = int(eager_threshold)
@@ -69,6 +100,7 @@ class RFProcessor:
         self.chunks_meta: List[Dict[str, Any]] = []
         self._image_cache: Dict[str, Tuple[bytes, Dict[str, Any]]] = {}
         self._array_cache: Dict[str, Tuple[np.ndarray, Dict[str, Any]]] = {}
+        self._stft_cache: Dict[int, Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]] = {}
         self._noise_floor_cache: Dict[int, float] = {}
 
     @property
@@ -78,7 +110,7 @@ class RFProcessor:
             return "eager"
         return "batched"
 
-    def load_iq_file(self, filepath: str, iq_format: str = "float32", fs: Optional[float] = None, center_freq: Optional[float] = None) -> Dict[str, Any]:
+    def load_iq_file(self, filepath: str, iq_format: str = "float32", fs: Optional[float] = None, center_freq: Optional[float] = None, drone_name: Optional[str] = None, render_width: Optional[int] = None, render_height: Optional[int] = None, default_snr_db: Optional[float] = None, apply_awgn_snr_db: Optional[float] = None) -> Dict[str, Any]:
         """
         Load raw binary IQ file in int16 or float32 format with low-memory parsing.
         """
@@ -87,9 +119,23 @@ class RFProcessor:
             self.fs = float(fs)
         if center_freq is not None:
             self.center_freq = float(center_freq)
+        if drone_name is not None:
+            self.drone_name = str(drone_name).strip() or "DJI-MAVIC-PRO-3"
+        if render_width is not None and render_width > 0:
+            self.render_width = int(render_width)
+        if render_height is not None and render_height > 0:
+            self.render_height = int(render_height)
+        if apply_awgn_snr_db is not None:
+            self.default_snr_db = float(apply_awgn_snr_db)
+        elif default_snr_db is not None:
+            self.default_snr_db = float(default_snr_db)
 
         self.source_filename = os.path.basename(filepath)
         self.source_format = iq_format
+
+        t0 = time.time()
+        file_size_mb = os.path.getsize(filepath) / (1024 * 1024) if os.path.exists(filepath) else 0.0
+        logger.info(f"Loading IQ file '{filepath}' (Size: {file_size_mb:.2f} MB, format: {iq_format}, Fs: {self.fs / 1e6:.2f} MHz, Fc: {self.center_freq / 1e6:.2f} MHz, Res: {self.render_width}x{self.render_height})...")
 
         if iq_format == "int16":
             raw = np.fromfile(filepath, dtype='<i2')
@@ -109,6 +155,7 @@ class RFProcessor:
             max_val = np.nanmax(np.abs(sample_check)) if len(sample_check) > 0 else 0
             if max_val > 1000.0:
                 del raw
+                logger.warning(f"Detected large values in float32 file (>1000). Auto-fallback to int16 format.")
                 # Fallback to int16
                 raw_i16 = np.fromfile(filepath, dtype='<i2')
                 if len(raw_i16) % 2 != 0:
@@ -130,13 +177,19 @@ class RFProcessor:
         else:
             raise ValueError(f"Unsupported IQ format: {iq_format}. Must be 'int16' or 'float32'.")
 
+        if apply_awgn_snr_db is not None:
+            self.iq_data = add_awgn(self.iq_data, snr_db=float(apply_awgn_snr_db))
+            logger.info(f"Applied AWGN noise to IQ file (Target SNR: {apply_awgn_snr_db:.1f} dB).")
+
         self.total_samples = len(self.iq_data)
+        elapsed_s = time.time() - t0
+        logger.info(f"Loaded {self.total_samples:,} complex samples ({self.source_format}) in {elapsed_s:.3f}s. Calculating chunks...")
         self._calculate_chunks()
         self._initialize_cache_for_mode()
 
         return self.get_summary()
 
-    def load_h5_file(self, filepath: str, dataset_name: Optional[str] = None, fs: Optional[float] = None, center_freq: Optional[float] = None) -> Dict[str, Any]:
+    def load_h5_file(self, filepath: str, dataset_name: Optional[str] = None, fs: Optional[float] = None, center_freq: Optional[float] = None, drone_name: Optional[str] = None, render_width: Optional[int] = None, render_height: Optional[int] = None, default_snr_db: Optional[float] = None, apply_awgn_snr_db: Optional[float] = None) -> Dict[str, Any]:
         """
         Load HDF5 file containing RF IQ data.
         Supports:
@@ -147,6 +200,20 @@ class RFProcessor:
         self.source_filename = os.path.basename(filepath)
         HEADER_SIZE = 40
         SCALE = 32768.0
+        t0 = time.time()
+
+        if drone_name is not None:
+            self.drone_name = str(drone_name).strip() or "DJI-MAVIC-PRO-3"
+        if render_width is not None and render_width > 0:
+            self.render_width = int(render_width)
+        if render_height is not None and render_height > 0:
+            self.render_height = int(render_height)
+        if apply_awgn_snr_db is not None:
+            self.default_snr_db = float(apply_awgn_snr_db)
+        elif default_snr_db is not None:
+            self.default_snr_db = float(default_snr_db)
+
+        logger.info(f"Loading HDF5 file '{filepath}' (Fs: {self.fs / 1e6:.2f} MHz, Fc: {self.center_freq / 1e6:.2f} MHz, Res: {self.render_width}x{self.render_height})...")
 
         with h5py.File(filepath, 'r') as h5f:
             # Check attributes for metadata
@@ -281,10 +348,37 @@ class RFProcessor:
                             self.iq_data = (flat.astype(np.float32) + 0j).astype(np.complex64)
                             self.source_format = "float32"
 
-        if fs is not None:
-            self.fs = float(fs)
+        if self.iq_data is None:
+            raise ValueError("No valid dataset or IQ data found in HDF5 file.")
+
+        if apply_awgn_snr_db is not None:
+            self.iq_data = add_awgn(self.iq_data, snr_db=float(apply_awgn_snr_db))
+            logger.info(f"Applied AWGN noise to HDF5 signal (Target SNR: {apply_awgn_snr_db:.1f} dB).")
 
         self.total_samples = len(self.iq_data)
+        elapsed_s = time.time() - t0
+        logger.info(f"Loaded {self.total_samples:,} complex samples from HDF5 ({self.source_format}) in {elapsed_s:.3f}s. Calculating chunks...")
+        self._calculate_chunks()
+        self._initialize_cache_for_mode()
+
+        return self.get_summary()
+
+    def apply_awgn(self, snr_db: float, rng: Optional[np.random.Generator] = None) -> Dict[str, Any]:
+        """
+        Injects Additive White Gaussian Noise (AWGN) into the currently loaded IQ data
+        to achieve the specified target SNR in dB and recalculates spectrograms.
+        """
+        if self.iq_data is None:
+            raise RuntimeError("No IQ data loaded to apply AWGN noise.")
+
+        self.iq_data = add_awgn(self.iq_data, snr_db=float(snr_db), rng=rng)
+        self.default_snr_db = float(snr_db)
+        logger.info(f"Dynamically applied AWGN noise to IQ signal (Target SNR: {snr_db:.1f} dB).")
+
+        self._image_cache.clear()
+        self._array_cache.clear()
+        self._stft_cache.clear()
+        self._noise_floor_cache.clear()
         self._calculate_chunks()
         self._initialize_cache_for_mode()
         return self.get_summary()
@@ -303,56 +397,92 @@ class RFProcessor:
     def set_config(self,
                    fs: Optional[float] = None,
                    center_freq: Optional[float] = None,
+                   drone_name: Optional[str] = None,
                    chunk_duration_ms: Optional[float] = None,
                    overlap_duration_ms: Optional[float] = None,
+                   default_snr_db: Optional[float] = None,
+                   render_width: Optional[int] = None,
+                   render_height: Optional[int] = None,
                    nfft: Optional[int] = None,
                    hop_length: Optional[int] = None,
                    window: Optional[str] = None,
                    colormap: Optional[str] = None,
+                   colormap_engine: Optional[str] = None,
                    db_min: Optional[float] = None,
-                   db_max: Optional[float] = None,
-                   eager_threshold: Optional[int] = None,
-                   batch_size: Optional[int] = None):
-        """Update STFT / chunking configuration."""
+                   db_max: Optional[float] = None):
+        """Update signal and STFT processing parameters."""
         if fs is not None:
             self.fs = float(fs)
         if center_freq is not None:
             self.center_freq = float(center_freq)
+        if drone_name is not None:
+            self.drone_name = str(drone_name).strip() or "DJI-MAVIC-PRO-3"
         if chunk_duration_ms is not None:
             self.chunk_duration_ms = float(chunk_duration_ms)
         if overlap_duration_ms is not None:
             self.overlap_duration_ms = float(overlap_duration_ms)
+        if default_snr_db is not None:
+            self.default_snr_db = float(default_snr_db)
+        if render_width is not None and render_width > 0:
+            self.render_width = int(render_width)
+        if render_height is not None and render_height > 0:
+            self.render_height = int(render_height)
         if nfft is not None:
             self.nfft = int(nfft)
-        if hop_length is not None:
+            self.hop_length = int(hop_length) if hop_length else int(self.nfft // 4)
+        elif hop_length is not None:
             self.hop_length = int(hop_length)
-        elif nfft is not None:
-            self.hop_length = int(self.nfft // 4)
         if window is not None:
             self.window = str(window)
         if colormap is not None and colormap in self.COLORMAPS:
             self.colormap = str(colormap)
+        if colormap_engine is not None and str(colormap_engine).lower() in self.SUPPORTED_ENGINES:
+            self.colormap_engine = str(colormap_engine).lower()
         if db_min is not None:
             self.db_min = float(db_min)
         if db_max is not None:
             self.db_max = float(db_max)
-        if eager_threshold is not None:
-            self.eager_threshold = int(eager_threshold)
-        if batch_size is not None:
-            self.batch_size = int(batch_size)
 
         self._image_cache.clear()
         self._array_cache.clear()
+        self._stft_cache.clear()
         self._noise_floor_cache.clear()
         self.active_batch_range = (0, 0)
         if self.iq_data is not None:
             self._calculate_chunks()
             self._initialize_cache_for_mode()
 
+    def get_formatted_filename(self, chunk_id: Optional[int] = None, extension: str = "png", drone_name: Optional[str] = None) -> str:
+        """
+        Generates standard formatted filename:
+        <drone_name>_<frequency sample>_<frequency center>_<dtype>[_chunk_id].ext
+        E.g.: DJI-MAVIC-PRO-3_100MHz_2450MHz_float.iq / .txt / .jpg
+        """
+        target_drone = drone_name or self.drone_name or "DJI-MAVIC-PRO-3"
+        clean_drone = re.sub(r'[\s_]+', '-', target_drone.strip())
+        
+        fs_mhz = self.fs / 1e6
+        fs_str = f"{fs_mhz:g}MHz"
+        
+        fc_mhz = self.center_freq / 1e6
+        fc_str = f"{fc_mhz:g}MHz"
+        
+        dtype_lower = (self.source_format or "float32").lower()
+        dtype_str = "float" if "float" in dtype_lower or "complex" in dtype_lower else "int16"
+        
+        base = f"{clean_drone}_{fs_str}_{fc_str}_{dtype_str}"
+        total_chunks = len(self.chunks_meta)
+        if total_chunks > 1 and chunk_id is not None:
+            base = f"{base}_{chunk_id:04d}"
+            
+        ext = extension.lstrip('.')
+        return f"{base}.{ext}" if ext else base
+
     def _calculate_chunks(self):
         """Divides the IQ data into overlapping time chunks."""
         self._image_cache.clear()
         self._array_cache.clear()
+        self._stft_cache.clear()
         self._noise_floor_cache.clear()
         self.active_batch_range = (0, 0)
         if self.iq_data is None or self.total_samples == 0:
@@ -398,23 +528,24 @@ class RFProcessor:
                 break
             start_idx += step_samples
 
-    def _cache_key(self, chunk_id: int, width: Optional[int], height: Optional[int]) -> str:
-        return f"{chunk_id}_{self.nfft}_{self.hop_length}_{self.colormap}_{self.window}_{self.db_min}_{self.db_max}_{width}_{height}"
+        total_dur_ms = (self.total_samples / self.fs) * 1e3
+        logger.info(f"Calculated {len(self.chunks_meta)} chunks ({total_dur_ms:.2f} ms total, chunk_dur: {self.chunk_duration_ms:.1f} ms, overlap: {self.overlap_duration_ms:.1f} ms, render_mode: {self.render_mode}).")
+
+    def _cache_key(self, chunk_id: int, width: Optional[int], height: Optional[int], engine: Optional[str] = None, img_format: str = "PNG") -> str:
+        active_engine = engine.lower() if engine and engine.lower() in self.SUPPORTED_ENGINES else self.colormap_engine
+        w = width or self.render_width
+        h = height or self.render_height
+        return f"{chunk_id}_{self.nfft}_{self.hop_length}_{self.colormap}_{active_engine}_{self.window}_{self.db_min}_{self.db_max}_{w}_{h}_{img_format.upper()}"
 
     def _initialize_cache_for_mode(self):
-        """Initializes cache based on current render mode."""
+        """
+        Initializes and clears cache based on current render mode.
+        """
         self._image_cache.clear()
         self._array_cache.clear()
+        self._stft_cache.clear()
         self._noise_floor_cache.clear()
         self.active_batch_range = (0, 0)
-
-        if not self.chunks_meta or self.iq_data is None:
-            return
-
-        if self.render_mode == "eager":
-            self.precompute_all_spectrograms()
-        else:
-            self.ensure_batch_cached(0)
 
     def _evict_inactive_chunks(self, keep_chunk_ids: set):
         """
@@ -425,9 +556,13 @@ class RFProcessor:
         for k in keys_to_del:
             self._image_cache.pop(k, None)
 
-        arr_keys_to_del = [k for k in list(self._array_cache.keys()) if int(k.split('_')[0]) not in keep_chunk_ids]
+        arr_keys_to_del = [k for k in list(self._array_cache.keys()) if int(k.replace('arr_', '').split('_')[0]) not in keep_chunk_ids]
         for k in arr_keys_to_del:
             self._array_cache.pop(k, None)
+
+        stft_keys_to_del = [cid for cid in list(self._stft_cache.keys()) if cid not in keep_chunk_ids]
+        for cid in stft_keys_to_del:
+            self._stft_cache.pop(cid, None)
 
         noise_keys_to_del = [cid for cid in list(self._noise_floor_cache.keys()) if cid not in keep_chunk_ids]
         for cid in noise_keys_to_del:
@@ -446,14 +581,19 @@ class RFProcessor:
         if total_chunks <= self.eager_threshold:
             return
 
+        target_w = width if width and width > 0 else self.render_width
+        target_h = height if height and height > 0 else self.render_height
+
         # Calculate batch window
         batch_start = (target_chunk_id // self.batch_size) * self.batch_size
         batch_end = min(batch_start + self.batch_size, total_chunks)
 
+        logger.debug(f"Prefetching chunk batch [{batch_start}:{batch_end}] ({target_w}x{target_h}, evicting other cached chunks)...")
+        t0 = time.time()
         with self._lock:
             # Check if active batch range already covers this
             if self.active_batch_range == (batch_start, batch_end):
-                target_key = self._cache_key(target_chunk_id, width, height)
+                target_key = self._cache_key(target_chunk_id, target_w, target_h)
                 if target_key in self._image_cache:
                     return
 
@@ -463,26 +603,26 @@ class RFProcessor:
 
             def _render_chunk(c_id):
                 try:
-                    self.render_spectrogram_image(c_id, width=width, height=height, _skip_batch_check=True)
+                    self.render_spectrogram_image(c_id, width=target_w, height=target_h, _skip_batch_check=True)
                     self.render_spectrogram_image(c_id, width=160, height=90, _skip_batch_check=True)
                     if c_id not in self._noise_floor_cache:
                         power_db, _, _, _ = self.compute_spectrogram(c_id)
                         linear_all_power = 10.0 ** (power_db / 10.0)
                         self._noise_floor_cache[c_id] = max(float(np.percentile(linear_all_power, 15)), 1e-12)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.error(f"Error rendering chunk {c_id} in batch: {e}")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                 list(executor.map(_render_chunk, range(batch_start, batch_end)))
+        logger.debug(f"Finished caching batch [{batch_start}:{batch_end}] in {time.time() - t0:.3f}s.")
 
     def precompute_all_spectrograms(self, width: int = 1024, height: int = 512, max_workers: int = 8):
         """
         Precomputes and caches all spectrogram chunk images in parallel (for Eager mode)
         so user switching between chunks is instantaneous (0ms delay).
         """
-        if not self.chunks_meta or self.iq_data is None:
-            return
-
+        logger.info(f"Eager mode: Precomputing all {len(self.chunks_meta)} spectrogram chunks in parallel ({max_workers} workers)...")
+        t0 = time.time()
         def _render_task(c_id):
             try:
                 # Pre-render main canvas image (1024x512)
@@ -494,11 +634,12 @@ class RFProcessor:
                     power_db, _, _, _ = self.compute_spectrogram(c_id)
                     linear_all_power = 10.0 ** (power_db / 10.0)
                     self._noise_floor_cache[c_id] = max(float(np.percentile(linear_all_power, 15)), 1e-12)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.error(f"Error precomputing spectrogram chunk {c_id}: {e}")
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             list(executor.map(_render_task, range(len(self.chunks_meta))))
+        logger.info(f"Completed precomputing {len(self.chunks_meta)} chunks in {time.time() - t0:.3f}s.")
 
     def render_waterfall_video(self,
                                output_filepath: str,
@@ -600,7 +741,7 @@ class RFProcessor:
 
     def get_summary(self) -> Dict[str, Any]:
         """Return summary of current dataset and session."""
-        total_duration_ms = (self.total_samples / self.fs * 1e3) if self.fs > 0 else 0.0
+        total_dur_ms = (self.total_samples / self.fs * 1e3) if self.fs > 0 else 0.0
         return {
             "source_filename": self.source_filename,
             "source_format": self.source_format,
@@ -608,11 +749,15 @@ class RFProcessor:
             "fs_mhz": self.fs / 1e6,
             "center_freq_hz": self.center_freq,
             "center_freq_mhz": self.center_freq / 1e6,
+            "drone_name": self.drone_name,
+            "render_width": self.render_width,
+            "render_height": self.render_height,
             "total_samples": self.total_samples,
-            "total_duration_ms": total_duration_ms,
-            "total_duration_us": total_duration_ms * 1000.0,
+            "total_duration_ms": total_dur_ms,
+            "total_duration_us": total_dur_ms * 1e3,
             "chunk_duration_ms": self.chunk_duration_ms,
             "overlap_duration_ms": self.overlap_duration_ms,
+            "default_snr_db": self.default_snr_db,
             "num_chunks": len(self.chunks_meta),
             "render_mode": self.render_mode,
             "eager_threshold": self.eager_threshold,
@@ -623,6 +768,8 @@ class RFProcessor:
                 "hop_length": self.hop_length,
                 "window": self.window,
                 "colormap": self.colormap,
+                "colormap_engine": self.colormap_engine,
+                "supported_engines": self.SUPPORTED_ENGINES,
                 "db_min": self.db_min,
                 "db_max": self.db_max,
                 "supported_nfft": self.SUPPORTED_NFFT
@@ -631,16 +778,33 @@ class RFProcessor:
             "supported_nfft": self.SUPPORTED_NFFT
         }
 
-    def compute_spectrogram(self, chunk_id: int) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+    def get_chunk_iq_data(self, chunk_id: int, target_snr_db: Optional[float] = None) -> np.ndarray:
         """
-        Compute STFT spectrogram for a specific chunk.
+        Retrieves the 1D complex64 IQ slice for chunk_id, optionally injecting AWGN noise for target SNR.
+        """
+        if self.iq_data is None or chunk_id < 0 or chunk_id >= len(self.chunks_meta):
+            raise IndexError(f"Chunk ID {chunk_id} out of bounds.")
+        meta = self.chunks_meta[chunk_id]
+        chunk_iq = self.iq_data[meta["start_idx"]:meta["end_idx"]].copy()
+        if target_snr_db is not None:
+            chunk_iq = add_awgn(chunk_iq, snr_db=float(target_snr_db))
+        return chunk_iq
+
+    def compute_spectrogram(self, chunk_id: int, target_snr_db: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]]:
+        """
+        Compute STFT spectrogram for a specific chunk with single-pass caching.
         Returns (power_db_matrix, time_array_us, freq_array_mhz, chunk_info).
         """
+        if target_snr_db is None and chunk_id in self._stft_cache:
+            return self._stft_cache[chunk_id]
+
         if self.iq_data is None or chunk_id < 0 or chunk_id >= len(self.chunks_meta):
             raise IndexError(f"Chunk ID {chunk_id} out of bounds.")
 
         meta = self.chunks_meta[chunk_id]
         chunk_samples = self.iq_data[meta["start_idx"]:meta["end_idx"]]
+        if target_snr_db is not None:
+            chunk_samples = add_awgn(chunk_samples, snr_db=float(target_snr_db))
 
         # If chunk is shorter than nfft, pad with zeros
         if len(chunk_samples) < self.nfft:
@@ -673,30 +837,49 @@ class RFProcessor:
         # Time in microseconds relative to start of file
         time_us = meta["start_time_us"] + (t * 1e6)
 
-        return power_db, time_us, freq_mhz, meta
+        res = (power_db, time_us, freq_mhz, meta)
+        if target_snr_db is None:
+            self._stft_cache[chunk_id] = res
+        return res
 
-    def render_spectrogram_image(self, chunk_id: int, width: Optional[int] = None, height: Optional[int] = None, _skip_batch_check: bool = False) -> Tuple[bytes, Dict[str, Any]]:
+    def render_spectrogram_image(self,
+                                 chunk_id: int,
+                                 width: Optional[int] = None,
+                                 height: Optional[int] = None,
+                                 engine: Optional[str] = None,
+                                 image_format: str = "PNG",
+                                 quality: int = 95,
+                                 target_snr_db: Optional[float] = None,
+                                 _skip_batch_check: bool = False) -> Tuple[bytes, Dict[str, Any]]:
         """
-        Render the STFT spectrogram of chunk_id as an RGB image buffer in PNG format
-        with high-contrast auto-adaptive dynamic range and instant cache retrieval.
+        Render the STFT spectrogram of chunk_id as an RGB image buffer in PNG or JPEG format
+        with high-contrast auto-adaptive dynamic range, selectable resolution, and instant cache retrieval.
         """
-        key = self._cache_key(chunk_id, width, height)
-        if key in self._image_cache:
+        active_engine = engine.lower() if engine and engine.lower() in self.SUPPORTED_ENGINES else self.colormap_engine
+        target_w = width if width and width > 0 else self.render_width
+        target_h = height if height and height > 0 else self.render_height
+        img_fmt = image_format.upper() if image_format else "PNG"
+        if img_fmt == "JPG":
+            img_fmt = "JPEG"
+
+        key = self._cache_key(chunk_id, target_w, target_h, engine=active_engine, img_format=img_fmt)
+        if target_snr_db is None and key in self._image_cache:
             return self._image_cache[key]
 
-        if not _skip_batch_check and self.render_mode == "batched":
+        if not _skip_batch_check and self.render_mode == "batched" and target_snr_db is None:
             b_start, b_end = self.active_batch_range
             if chunk_id < b_start or chunk_id >= b_end:
-                self.ensure_batch_cached(chunk_id, width=width or 1024, height=height or 512)
+                self.ensure_batch_cached(chunk_id, width=target_w, height=target_h)
                 if key in self._image_cache:
                     return self._image_cache[key]
 
-        power_db, time_us, freq_mhz, meta = self.compute_spectrogram(chunk_id)
+        power_db, time_us, freq_mhz, meta = self.compute_spectrogram(chunk_id, target_snr_db=target_snr_db)
 
-        # Robust Auto-Adaptive Dynamic Range Contrast
+        # Fast strided percentile sampling for auto-adaptive dynamic range contrast
         if self.db_min is None or self.db_max is None or self.db_min >= self.db_max or (self.db_min == -90.0 and self.db_max == 0.0):
-            p_noise = float(np.percentile(power_db, 20))
-            p_peak = float(np.percentile(power_db, 99.8))
+            sub_power = power_db[::4, ::4] if power_db.size > 10000 else power_db
+            p_noise = float(np.percentile(sub_power, 20))
+            p_peak = float(np.percentile(sub_power, 99.8))
             dyn_range = max(p_peak - p_noise, 25.0)
             p_min = p_noise - 3.0
             p_max = p_noise + dyn_range + 5.0
@@ -710,30 +893,38 @@ class RFProcessor:
         norm_power_flipped = np.flipud(norm_power)
         uint8_power = (norm_power_flipped * 255.0).astype(np.uint8)
 
-        # Apply Colormap: OpenCV cv2.COLORMAP_HOT / cv2.COLORMAP_TURBO / etc.
-        cmap_name = self.colormap.lower()
-        if cmap_name in self.OPENCV_COLORMAPS:
-            cv_cmap = self.OPENCV_COLORMAPS[cmap_name]
-            bgr_img = cv2.applyColorMap(uint8_power, cv_cmap)
-            if width and height and (bgr_img.shape[1] != width or bgr_img.shape[0] != height):
-                bgr_img = cv2.resize(bgr_img, (width, height), interpolation=cv2.INTER_LINEAR)
-            rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(rgb_img)
-        elif cmap_name == 'gray':
-            if width and height and (uint8_power.shape[1] != width or uint8_power.shape[0] != height):
-                uint8_power = cv2.resize(uint8_power, (width, height), interpolation=cv2.INTER_LINEAR)
-            rgb_img = cv2.cvtColor(uint8_power, cv2.COLOR_GRAY2RGB)
-            img = Image.fromarray(rgb_img)
-        else:
-            cmap = plt.get_cmap(self.colormap)
+        # Colormap Rendering (OpenCV vs Matplotlib)
+        if active_engine == 'matplotlib':
+            try:
+                cmap = plt.get_cmap(self.colormap)
+            except Exception:
+                cmap = plt.get_cmap('viridis')
             rgba_img = (cmap(norm_power_flipped) * 255).astype(np.uint8)
-            img = Image.fromarray(rgba_img)
-            if width and height:
-                img = img.resize((width, height), Image.Resampling.BILINEAR)
+            img = Image.fromarray(rgba_img).convert("RGB")
+            if img.width != target_w or img.height != target_h:
+                img = img.resize((target_w, target_h), Image.Resampling.BILINEAR)
+        else:
+            # OpenCV Rendering Engine (default / optimized for performance)
+            cmap_name = self.colormap.lower()
+            if cmap_name == 'gray':
+                if uint8_power.shape[1] != target_w or uint8_power.shape[0] != target_h:
+                    uint8_power = cv2.resize(uint8_power, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                rgb_img = cv2.cvtColor(uint8_power, cv2.COLOR_GRAY2RGB)
+                img = Image.fromarray(rgb_img)
+            else:
+                cv_cmap = self.OPENCV_COLORMAPS.get(cmap_name, cv2.COLORMAP_TURBO)
+                bgr_img = cv2.applyColorMap(uint8_power, cv_cmap)
+                if bgr_img.shape[1] != target_w or bgr_img.shape[0] != target_h:
+                    bgr_img = cv2.resize(bgr_img, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+                rgb_img = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2RGB)
+                img = Image.fromarray(rgb_img)
 
-        # Save to PNG in memory with fast compression
+        # Save to memory buffer with requested format (PNG / JPEG)
         buf = io.BytesIO()
-        img.save(buf, format="PNG", compress_level=1)
+        if img_fmt == "JPEG":
+            img.save(buf, format="JPEG", quality=quality)
+        else:
+            img.save(buf, format="PNG", compress_level=1)
         img_bytes = buf.getvalue()
 
         render_meta = {
@@ -744,26 +935,45 @@ class RFProcessor:
             "raw_stft_height": power_db.shape[0],
             "db_min": round(p_min, 1),
             "db_max": round(p_max, 1),
-            "colormap": self.colormap
+            "colormap": self.colormap,
+            "colormap_engine": active_engine,
+            "image_format": img_fmt
         }
 
         self._image_cache[key] = (img_bytes, render_meta)
         return img_bytes, render_meta
 
-    def get_spectrogram_raw_image(self, chunk_id: int, width: Optional[int] = 1024, height: Optional[int] = 512) -> Tuple[np.ndarray, Dict[str, Any]]:
+    def render_spectrogram_image_array(self,
+                                       chunk_id: int,
+                                       width: Optional[int] = None,
+                                       height: Optional[int] = None,
+                                       engine: Optional[str] = None,
+                                       _skip_batch_check: bool = False) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Directly returns the uint8 normalized spectrogram image array and metadata without PNG compression,
-        providing maximum performance for automated detectors and processing pipelines.
+        Directly renders and returns the BGR uint8 image array without PNG encoding/decoding overhead,
+        optimized for automated detector pipelines (ONNX / CFAR).
         """
-        key = self._cache_key(chunk_id, width, height)
-        if key in self._array_cache:
-            return self._array_cache[key]
+        active_engine = engine.lower() if engine and engine.lower() in self.SUPPORTED_ENGINES else self.colormap_engine
+        target_w = width if width and width > 0 else self.render_width
+        target_h = height if height and height > 0 else self.render_height
+        arr_key = f"arr_{self._cache_key(chunk_id, width, height, engine=active_engine)}"
+        if arr_key in self._array_cache:
+            return self._array_cache[arr_key]
+
+        if not _skip_batch_check and self.render_mode == "batched":
+            b_start, b_end = self.active_batch_range
+            if chunk_id < b_start or chunk_id >= b_end:
+                self.ensure_batch_cached(chunk_id, width=width or 1024, height=height or 512)
+                if arr_key in self._array_cache:
+                    return self._array_cache[arr_key]
 
         power_db, time_us, freq_mhz, meta = self.compute_spectrogram(chunk_id)
 
+        # Fast strided percentile sampling
         if self.db_min is None or self.db_max is None or self.db_min >= self.db_max or (self.db_min == -90.0 and self.db_max == 0.0):
-            p_noise = float(np.percentile(power_db, 20))
-            p_peak = float(np.percentile(power_db, 99.8))
+            sub_power = power_db[::4, ::4] if power_db.size > 10000 else power_db
+            p_noise = float(np.percentile(sub_power, 20))
+            p_peak = float(np.percentile(sub_power, 99.8))
             dyn_range = max(p_peak - p_noise, 25.0)
             p_min = p_noise - 3.0
             p_max = p_noise + dyn_range + 5.0
@@ -771,27 +981,35 @@ class RFProcessor:
             p_min = self.db_min
             p_max = self.db_max
 
-        norm_power = np.clip((power_db - p_min) / (p_max - p_min + 1e-6) * 255.0, 0.0, 255.0).astype(np.uint8)
+        norm_power = np.clip((power_db - p_min) / (p_max - p_min + 1e-6), 0.0, 1.0)
         norm_power_flipped = np.flipud(norm_power)
+        uint8_power = (norm_power_flipped * 255.0).astype(np.uint8)
 
-        if width and height and (norm_power_flipped.shape[1] != width or norm_power_flipped.shape[0] != height):
-            img_arr = cv2.resize(norm_power_flipped, (width, height), interpolation=cv2.INTER_NEAREST)
+        cmap_name = self.colormap.lower()
+        if cmap_name == 'gray':
+            if width and height and (uint8_power.shape[1] != width or uint8_power.shape[0] != height):
+                uint8_power = cv2.resize(uint8_power, (width, height), interpolation=cv2.INTER_LINEAR)
+            bgr_img = cv2.cvtColor(uint8_power, cv2.COLOR_GRAY2BGR)
         else:
-            img_arr = norm_power_flipped
+            cv_cmap = self.OPENCV_COLORMAPS.get(cmap_name, cv2.COLORMAP_TURBO)
+            bgr_img = cv2.applyColorMap(uint8_power, cv_cmap)
+            if width and height and (bgr_img.shape[1] != width or bgr_img.shape[0] != height):
+                bgr_img = cv2.resize(bgr_img, (width, height), interpolation=cv2.INTER_LINEAR)
 
         render_meta = {
             **meta,
-            "width": img_arr.shape[1],
-            "height": img_arr.shape[0],
+            "width": bgr_img.shape[1],
+            "height": bgr_img.shape[0],
             "raw_stft_width": power_db.shape[1],
             "raw_stft_height": power_db.shape[0],
             "db_min": round(p_min, 1),
             "db_max": round(p_max, 1),
-            "colormap": self.colormap
+            "colormap": self.colormap,
+            "colormap_engine": active_engine
         }
 
-        self._array_cache[key] = (img_arr, render_meta)
-        return img_arr, render_meta
+        self._array_cache[arr_key] = (bgr_img, render_meta)
+        return bgr_img, render_meta
 
     def calculate_bdw_parameters(self,
                                  chunk_id: int,
@@ -799,11 +1017,13 @@ class RFProcessor:
                                  img_width: int,
                                  img_height: int,
                                  signal_type: str = "Unknown",
-                                 protocol: str = "Generic") -> Dict[str, Any]:
+                                 protocol: str = "Generic",
+                                 snr_db: Optional[float] = None) -> Dict[str, Any]:
         """
         Convert pixel bounding box [x, y, w, h] to physical RF BDW parameters:
         TOA (Time of Arrival), TOD (Time of Departure), PW (Pulse Width),
-        FC (Center Frequency), BW (Bandwidth), and estimated SNR (dB).
+        FC (Center Frequency), BW (Bandwidth), and SNR (dB).
+        Runs in O(1) instantaneous time using the user-defined/session SNR.
         """
         if chunk_id < 0 or chunk_id >= len(self.chunks_meta):
             raise IndexError(f"Chunk ID {chunk_id} out of range.")
@@ -832,8 +1052,8 @@ class RFProcessor:
         bw_mhz = max(freq_high_mhz - freq_low_mhz, 0.0)
         fc_mhz = (freq_high_mhz + freq_low_mhz) / 2.0
 
-        # Estimate SNR from spectrogram with cached noise floor
-        snr_db = self._estimate_box_snr(chunk_id, x, y, w, h, img_width, img_height)
+        # Use user-typed SNR or specified SNR
+        final_snr_db = float(snr_db) if snr_db is not None else float(self.default_snr_db)
 
         return {
             "toa_us": round(float(toa_us), 3),
@@ -843,50 +1063,8 @@ class RFProcessor:
             "bw_mhz": round(float(bw_mhz), 4),
             "freq_low_mhz": round(float(freq_low_mhz), 4),
             "freq_high_mhz": round(float(freq_high_mhz), 4),
-            "snr_db": round(float(snr_db), 1),
+            "snr_db": round(final_snr_db, 1),
             "type_of_signal": signal_type,
             "protocol": protocol,
             "data_source": self.source_filename
         }
-
-    def _estimate_box_snr(self, chunk_id: int, x: float, y: float, w: float, h: float, img_width: int, img_height: int) -> float:
-        """
-        Calculates estimated Signal-to-Noise Ratio (SNR) in dB within the bounding box.
-        Uses single-pass cached chunk noise floor for ultra-fast evaluation.
-        """
-        try:
-            power_db, _, _, _ = self.compute_spectrogram(chunk_id)
-            n_freq, n_time = power_db.shape
-
-            # Map image coords to power_db matrix indices
-            x_min_idx = int(np.clip((x / img_width) * n_time, 0, n_time - 1))
-            x_max_idx = int(np.clip(((x + w) / img_width) * n_time, 1, n_time))
-
-            # Since spectrogram Y is inverted relative to standard fftshift (row 0 is f_min):
-            y_top_idx = int(np.clip(((img_height - y) / img_height) * n_freq, 1, n_freq))
-            y_bot_idx = int(np.clip(((img_height - (y + h)) / img_height) * n_freq, 0, n_freq - 1))
-
-            if y_top_idx <= y_bot_idx:
-                y_top_idx = min(y_bot_idx + 1, n_freq)
-
-            box_power_db = power_db[y_bot_idx:y_top_idx, x_min_idx:x_max_idx]
-            if box_power_db.size == 0:
-                return 15.0
-
-            # Signal power: 80th percentile of linear power in box ROI only
-            linear_box_power = 10.0 ** (box_power_db / 10.0)
-            sig_power = float(np.percentile(linear_box_power, 80))
-
-            # Noise floor power: cached 15th percentile of entire chunk spectrogram
-            if chunk_id in self._noise_floor_cache:
-                noise_power = self._noise_floor_cache[chunk_id]
-            else:
-                linear_all_power = 10.0 ** (power_db / 10.0)
-                noise_power = max(float(np.percentile(linear_all_power, 15)), 1e-12)
-                self._noise_floor_cache[chunk_id] = noise_power
-
-            snr_linear = sig_power / noise_power
-            snr_db = 10.0 * np.log10(max(snr_linear, 1.0))
-            return float(np.clip(snr_db, 0.0, 50.0))
-        except Exception:
-            return 18.5

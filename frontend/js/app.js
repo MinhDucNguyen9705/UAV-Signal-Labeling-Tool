@@ -63,17 +63,6 @@ class RFCVATApp {
       }
     });
 
-    // Export Dropdown Toggle
-    const exportDropdown = document.getElementById('exportDropdown');
-    const exportToggleBtn = document.getElementById('exportToggleBtn');
-    exportToggleBtn?.addEventListener('click', (e) => {
-      e.stopPropagation();
-      exportDropdown.classList.toggle('active');
-    });
-
-    document.addEventListener('click', () => {
-      exportDropdown?.classList.remove('active');
-    });
   }
 
   setTool(toolName) {
@@ -154,7 +143,12 @@ class RFCVATApp {
     const applyBtn = document.getElementById('applyStftBtn');
 
     applyBtn?.addEventListener('click', async () => {
-      this.showLoader(true, "Updating STFT & Spectrogram Parameters...");
+      this.showProgress(true, {
+        title: "Updating STFT & Spectrogram Parameters...",
+        current: 25,
+        total: 100,
+        stats: "Re-computing STFT grid & resizing bounding boxes..."
+      });
       try {
         const resp = await fetch('/api/session/config', {
           method: 'POST',
@@ -171,14 +165,53 @@ class RFCVATApp {
           this.sessionSummary = data.summary;
           this.navigation.setChunks(data.chunks);
           this.navigation.renderFilmstrip();
+
+          // Render initial batch with progress
+          const chunksToRender = data.chunks.slice(0, Math.min(15, data.chunks.length));
+          const totalRender = chunksToRender.length;
+          let renderedCount = 0;
+
+          this.showProgress(true, {
+            title: "Re-rendering Spectrograms...",
+            current: 60,
+            total: 100,
+            stats: `Rendering ${totalRender} chunks with updated STFT colormap...`
+          });
+
+          await new Promise((resolve) => {
+            if (totalRender === 0) return resolve();
+            const timestamp = Date.now();
+            chunksToRender.forEach(chunk => {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              const onDone = () => {
+                renderedCount++;
+                const renderPct = 60 + Math.round((renderedCount / totalRender) * 40);
+                this.showProgress(true, {
+                  title: "Re-rendering Spectrograms...",
+                  current: renderPct,
+                  total: 100,
+                  stats: `Rendered chunk ${renderedCount} / ${totalRender}`
+                });
+                this.preloadedImages.set(chunk.id, img);
+                if (renderedCount >= totalRender) {
+                  resolve();
+                }
+              };
+              img.onload = onDone;
+              img.onerror = onDone;
+              img.src = `/api/chunks/${chunk.id}/spectrogram?t=${timestamp}`;
+            });
+          });
+
           this.preloadAllChunks();
           this.loadChunkData(this.navigation.currentChunkId);
-          this.showNotification("STFT parameters updated & filmstrip synced!");
+          this.showNotification("STFT parameters updated & filmstrip synced!", "success");
         }
       } catch (e) {
         alert("Failed to update STFT configuration: " + e.message);
       } finally {
-        this.showLoader(false);
+        this.showProgress(false);
       }
     });
   }
@@ -198,7 +231,32 @@ class RFCVATApp {
     uploadDropzone?.addEventListener('click', () => fileInput.click());
     fileInput?.addEventListener('change', (e) => {
       if (e.target.files.length > 0) {
-        uploadDropzone.querySelector('.dropzone-text').textContent = e.target.files[0].name;
+        const textEl = uploadDropzone.querySelector('.dropzone-text');
+        if (textEl) textEl.textContent = e.target.files[0].name;
+      }
+    });
+
+    // Dropdown / AWGN / Resolution toggles in Upload Modal
+    const uploadApplyAwgn = document.getElementById('uploadApplyAwgn');
+    const uploadAwgnFields = document.getElementById('uploadAwgnFields');
+    const uploadResPreset = document.getElementById('uploadResolutionPreset');
+    const uploadCustomResRow = document.getElementById('uploadCustomResRow');
+    const uploadRenderWidth = document.getElementById('uploadRenderWidth');
+    const uploadRenderHeight = document.getElementById('uploadRenderHeight');
+
+    uploadApplyAwgn?.addEventListener('change', () => {
+      if (uploadAwgnFields) uploadAwgnFields.style.display = uploadApplyAwgn.checked ? 'block' : 'none';
+    });
+
+    uploadResPreset?.addEventListener('change', () => {
+      const val = uploadResPreset.value;
+      if (val === 'custom') {
+        if (uploadCustomResRow) uploadCustomResRow.style.display = 'flex';
+      } else {
+        if (uploadCustomResRow) uploadCustomResRow.style.display = 'none';
+        const [w, h] = val.split('x').map(Number);
+        if (uploadRenderWidth) uploadRenderWidth.value = w;
+        if (uploadRenderHeight) uploadRenderHeight.value = h;
       }
     });
 
@@ -207,8 +265,9 @@ class RFCVATApp {
         alert("Please select a file.");
         return;
       }
+      const file = fileInput.files[0];
       const formData = new FormData();
-      formData.append('file', fileInput.files[0]);
+      formData.append('file', file);
       formData.append('fs', document.getElementById('uploadFs').value);
       const fcMhz = parseFloat(document.getElementById('uploadCenterFreq')?.value || '2400.0');
       formData.append('center_freq', (isNaN(fcMhz) ? 2400e6 : fcMhz * 1e6).toString());
@@ -217,30 +276,146 @@ class RFCVATApp {
       formData.append('overlap_duration_ms', document.getElementById('uploadOverlapDur')?.value || 10.0);
       formData.append('nfft', document.getElementById('uploadNfft')?.value || 1024);
       formData.append('colormap', document.getElementById('uploadColormap')?.value || 'turbo');
+      formData.append('colormap_engine', document.getElementById('uploadColormapEngine')?.value || 'opencv');
       formData.append('window', document.getElementById('uploadWindow')?.value || 'hann');
 
-      this.showLoader(true, "Uploading & Processing RF Data...");
+      // Drone Name & SNR
+      const droneName = document.getElementById('uploadDroneName')?.value;
+      if (droneName) formData.append('drone_name', droneName);
+      const defaultSnr = document.getElementById('uploadSnr')?.value;
+      if (defaultSnr !== undefined && defaultSnr !== '') formData.append('default_snr_db', defaultSnr);
+
+      // Resolution
+      const resVal = uploadResPreset?.value || '1024x512';
+      if (resVal === 'custom') {
+        formData.append('render_width', document.getElementById('uploadRenderWidth')?.value || 1024);
+        formData.append('render_height', document.getElementById('uploadRenderHeight')?.value || 512);
+      } else {
+        const [w, h] = resVal.split('x').map(Number);
+        formData.append('render_width', w || 1024);
+        formData.append('render_height', h || 512);
+      }
+
+      // AWGN SNR modification on upload
+      if (uploadApplyAwgn?.checked) {
+        formData.append('apply_awgn', 'true');
+        formData.append('target_snr_db', document.getElementById('uploadAwgnSnr')?.value || '10.0');
+      }
+
       uploadModal.classList.remove('active');
 
+      const fileSizeMb = (file.size / (1024 * 1024)).toFixed(1);
+      this.showProgress(true, {
+        title: "Uploading RF Dataset...",
+        percent: 0,
+        detail: `Starting upload of ${file.name}...`,
+        stats: `File Size: ${fileSizeMb} MB`,
+        icon: "fa-cloud-upload-alt"
+      });
+
       try {
-        const resp = await fetch('/api/upload', { method: 'POST', body: formData });
-        const data = await resp.json();
-        if (data.status === 'success') {
-          this.sessionSummary = data.summary;
+        // Upload with XHR tracking
+        const uploadResult = await new Promise((resolve, reject) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/api/upload', true);
+
+          xhr.upload.onprogress = (e) => {
+            if (e.lengthComputable) {
+              const uploadPct = Math.round((e.loaded / e.total) * 100);
+              const loadedMb = (e.loaded / (1024 * 1024)).toFixed(1);
+              this.showProgress(true, {
+                title: "Uploading RF Dataset...",
+                percent: uploadPct,
+                detail: `Uploading ${file.name} (${loadedMb} / ${fileSizeMb} MB)`,
+                stats: `Transferring binary IQ data (${uploadPct}%)`,
+                icon: "fa-cloud-upload-alt"
+              });
+            }
+          };
+
+          xhr.onload = () => {
+            if (xhr.status >= 200 && xhr.status < 300) {
+              try {
+                resolve(JSON.parse(xhr.responseText));
+              } catch (err) {
+                reject(new Error("Invalid JSON response from server"));
+              }
+            } else {
+              try {
+                const err = JSON.parse(xhr.responseText);
+                reject(new Error(err.detail || `Upload failed with HTTP ${xhr.status}`));
+              } catch {
+                reject(new Error(`Upload failed with HTTP ${xhr.status}`));
+              }
+            }
+          };
+
+          xhr.onerror = () => reject(new Error("Network error during file upload"));
+          xhr.send(formData);
+        });
+
+        if (uploadResult.status === 'success') {
+          this.sessionSummary = uploadResult.summary;
           this.annotationsCache = {};
-          this.navigation.setChunks(data.chunks);
+          this.navigation.setChunks(uploadResult.chunks);
           this.navigation.renderFilmstrip();
-          this.preloadAllChunks();
           this.updateDatasetBadge();
+
+          // Phase 2: Render initial spectrogram batch with exact chunk numbers!
+          const isBatched = uploadResult.summary.render_mode === 'batched';
+          const totalChunks = uploadResult.chunks.length;
+          const chunksToRender = isBatched
+            ? uploadResult.chunks.slice(0, Math.min(uploadResult.summary.batch_size || 10, totalChunks))
+            : uploadResult.chunks;
+          const totalToRender = chunksToRender.length;
+          let renderedCount = 0;
+
+          this.showProgress(true, {
+            title: "Rendering Spectrograms...",
+            percent: 0,
+            detail: `Rendering Spectrogram 0 / ${totalToRender}${isBatched ? ` (Total: ${totalChunks} chunks)` : ''}`,
+            stats: `Resolution: ${uploadResult.summary.render_width}×${uploadResult.summary.render_height} (${uploadResult.summary.render_mode.toUpperCase()} mode)`,
+            icon: "fa-image"
+          });
+
+          await new Promise((resolve) => {
+            if (totalToRender === 0) return resolve();
+            const timestamp = Date.now();
+            chunksToRender.forEach(chunk => {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              const onDone = () => {
+                renderedCount++;
+                const renderPct = Math.round((renderedCount / totalToRender) * 100);
+                this.showProgress(true, {
+                  title: "Rendering Spectrograms...",
+                  percent: renderPct,
+                  detail: `Rendered Spectrogram ${renderedCount} / ${totalToRender}${isBatched ? ` (${totalChunks} total chunks)` : ''}`,
+                  stats: `Chunk ${chunk.id + 1}: ${chunk.duration_ms.toFixed(1)}ms | FFT: ${uploadResult.summary.stft_config?.nfft || 1024}`,
+                  icon: "fa-image"
+                });
+                this.preloadedImages.set(chunk.id, img);
+                if (renderedCount >= totalToRender) {
+                  resolve();
+                }
+              };
+              img.onload = onDone;
+              img.onerror = onDone;
+              img.src = `/api/chunks/${chunk.id}/spectrogram?t=${timestamp}`;
+            });
+          });
+
+          this.preloadAllChunks();
           this.loadChunkData(0);
-          this.showNotification("Uploaded and loaded successfully!");
+          this.showNotification(`Dataset '${file.name}' loaded (${totalChunks} chunks)!`, "success");
         } else {
-          alert("Upload failed: " + (data.detail || "Unknown error"));
+          alert("Upload failed: " + (uploadResult.detail || "Unknown error"));
         }
       } catch (e) {
+        console.error("Upload error:", e);
         alert("Error during upload: " + e.message);
       } finally {
-        this.showLoader(false);
+        this.showProgress(false);
       }
     });
 
@@ -262,8 +437,15 @@ class RFCVATApp {
       formData.append('chunk_duration_ms', document.getElementById('sampleChunkDur').value);
       formData.append('overlap_duration_ms', document.getElementById('sampleOverlapDur')?.value || 10.0);
 
-      this.showLoader(true, "Generating Synthetic RF Dataset...");
       sampleModal.classList.remove('active');
+
+      this.showProgress(true, {
+        title: "Synthesizing RF Dataset...",
+        percent: 25,
+        detail: "Generating complex time-domain waveforms & STFT matrices...",
+        stats: "Synthesizing RF pulses & background noise...",
+        icon: "fa-wave-square"
+      });
 
       try {
         const resp = await fetch('/api/generate_sample', { method: 'POST', body: formData });
@@ -273,15 +455,62 @@ class RFCVATApp {
           this.annotationsCache = {};
           this.navigation.setChunks(data.chunks);
           this.navigation.renderFilmstrip();
-          this.preloadAllChunks();
           this.updateDatasetBadge();
+
+          // Render initial spectrogram batch with progress
+          const isBatched = data.summary.render_mode === 'batched';
+          const totalChunks = data.chunks.length;
+          const chunksToRender = isBatched
+            ? data.chunks.slice(0, Math.min(data.summary.batch_size || 10, totalChunks))
+            : data.chunks;
+          const totalToRender = chunksToRender.length;
+          let renderedCount = 0;
+
+          this.showProgress(true, {
+            title: "Rendering Spectrograms...",
+            percent: 0,
+            detail: `Rendering Spectrogram 0 / ${totalToRender}${isBatched ? ` (Total: ${totalChunks} chunks)` : ''}`,
+            stats: `Resolution: ${data.summary.render_width}×${data.summary.render_height}`,
+            icon: "fa-image"
+          });
+
+          await new Promise((resolve) => {
+            if (totalToRender === 0) return resolve();
+            const timestamp = Date.now();
+            chunksToRender.forEach(chunk => {
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              const onDone = () => {
+                renderedCount++;
+                const renderPct = Math.round((renderedCount / totalToRender) * 100);
+                this.showProgress(true, {
+                  title: "Rendering Spectrograms...",
+                  percent: renderPct,
+                  detail: `Rendered Spectrogram ${renderedCount} / ${totalToRender}${isBatched ? ` (${totalChunks} total chunks)` : ''}`,
+                  stats: `Resolution: ${data.summary.render_width}×${data.summary.render_height} | Mode: ${data.summary.render_mode.toUpperCase()}`,
+                  icon: "fa-image"
+                });
+                this.preloadedImages.set(chunk.id, img);
+                if (renderedCount >= totalToRender) {
+                  resolve();
+                }
+              };
+              img.onload = onDone;
+              img.onerror = onDone;
+              img.src = `/api/chunks/${chunk.id}/spectrogram?t=${timestamp}`;
+            });
+          });
+
+          this.preloadAllChunks();
           this.loadChunkData(0);
-          this.showNotification("Synthetic dataset generated & loaded!");
+          this.showNotification(`Synthetic dataset generated (${totalChunks} chunks)!`, "success");
+        } else {
+          alert("Sample generation failed: " + (data.detail || "Unknown error"));
         }
       } catch (e) {
         alert("Error generating sample: " + e.message);
       } finally {
-        this.showLoader(false);
+        this.showProgress(false);
       }
     });
 
@@ -723,7 +952,7 @@ class RFCVATApp {
     }
   }
 
-  showProgress(visible, { title = "Running Auto-Labeling...", current = 0, total = 1, stats = "" } = {}) {
+  showProgress(visible, { title = "Processing...", percent = null, current = 0, total = 1, detail = "", stats = "", icon = "fa-bolt" } = {}) {
     const loader = document.getElementById('globalLoader');
     const titleEl = document.getElementById('globalLoaderText');
     const progContainer = document.getElementById('globalProgressBarContainer');
@@ -739,13 +968,29 @@ class RFCVATApp {
       if (titleEl && title) titleEl.textContent = title;
       if (progContainer) {
         progContainer.style.display = 'block';
-        const safeTotal = Math.max(1, total);
-        const pct = Math.min(100, Math.round((current / safeTotal) * 100));
-        if (progDetail) progDetail.textContent = `Chunk ${current} / ${safeTotal}`;
+        let pct = 0;
+        if (percent !== null && percent !== undefined) {
+          pct = Math.min(100, Math.max(0, Math.round(percent)));
+        } else {
+          const safeTotal = Math.max(1, total);
+          pct = Math.min(100, Math.max(0, Math.round((current / safeTotal) * 100)));
+        }
+
+        if (progDetail) {
+          if (detail) {
+            progDetail.textContent = detail;
+          } else if (total > 1) {
+            progDetail.textContent = `Chunk ${current} / ${total}`;
+          } else {
+            progDetail.textContent = `Progress`;
+          }
+        }
+
         if (progPercent) progPercent.textContent = `${pct}%`;
         if (progFill) progFill.style.width = `${pct}%`;
         if (progStats) {
-          progStats.innerHTML = `<i class="fas fa-bolt" style="color: var(--accent-cyan);"></i> <span>${stats || 'Analyzing RF signals...'}</span>`;
+          const iconClass = icon.startsWith('fa-') ? `fas ${icon}` : icon;
+          progStats.innerHTML = `<i class="${iconClass}" style="color: var(--accent-cyan);"></i> <span>${stats || 'Processing RF data...'}</span>`;
         }
       }
     } else {

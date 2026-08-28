@@ -3,3 +3,6 @@ __pycache__/
 samples/
 tests/
 test.py
+single_output/
+/*.py
+*.iq

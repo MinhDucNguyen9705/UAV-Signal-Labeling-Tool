@@ -70,31 +70,10 @@
       </button>
       <input type="file" id="importCocoFileInput" accept=".json,application/json" style="display: none;">
 
-      <!-- Export Dropdown -->
-      <div class="dropdown" id="exportDropdown">
-        <button class="btn btn-primary" id="exportToggleBtn">
-          <i class="fas fa-download"></i> Export <i class="fas fa-caret-down"
-            style="font-size: 10px; margin-left: 2px;"></i>
-        </button>
-        <div class="dropdown-content">
-          <div class="dropdown-item" id="exportCocoBtn">
-            <i class="fas fa-file-code"></i> Export COCO JSON (BDW Structure)
-          </div>
-          <div class="dropdown-item" id="exportZipBtn">
-            <i class="fas fa-file-archive"></i> Download Dataset ZIP (Images + Annotations)
-          </div>
-          <div class="dropdown-item" id="exportZipWithIqBtn">
-            <i class="fas fa-wave-square" style="color: var(--accent-cyan);"></i> Download Complete Bundle (IQ Chunks + Images + Annotations)
-          </div>
-          <div class="dropdown-item" id="exportWaterfallDropdownBtn">
-            <i class="fas fa-video"></i> Render & Download Waterfall Video (MP4)
-          </div>
-          <div class="dropdown-divider" style="height: 1px; background: var(--border-color); margin: 4px 0;"></div>
-          <div class="dropdown-item" id="importCocoDropdownBtn">
-            <i class="fas fa-file-import" style="color: var(--accent-cyan);"></i> Import COCO JSON File
-          </div>
-        </div>
-      </div>
+      <!-- Export Dataset Button -->
+      <button class="btn btn-primary" id="openExportModalBtn" title="Export Dataset Package (YOLO / COCO / Raw IQ / Video)">
+        <i class="fas fa-download"></i> Export
+      </button>
 
       <button class="btn btn-outline" id="openHotkeysBtn" title="Keyboard Shortcuts (?)">
         <i class="fas fa-keyboard"></i>
@@ -391,18 +370,31 @@
           <div class="panel-card-title">
             <span>STFT / Spectrogram Tuning</span>
           </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">Colormap</label>
+              <select class="form-select" id="stftColormap">
+                <option value="turbo">Turbo</option>
+                <option value="hot">Hot</option>
+                <option value="viridis">Viridis</option>
+                <option value="plasma">Plasma</option>
+                <option value="magma">Magma</option>
+                <option value="inferno">Inferno</option>
+                <option value="jet">Jet</option>
+                <option value="gray">Grayscale</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Engine</label>
+              <select class="form-select" id="stftColormapEngine">
+                <option value="opencv" selected>OpenCV (Fast)</option>
+                <option value="matplotlib">Matplotlib (Scientific)</option>
+              </select>
+            </div>
+          </div>
           <div class="form-group">
-            <label class="form-label">Colormap</label>
-            <select class="form-select" id="stftColormap">
-              <option value="turbo">Turbo (Recommended)</option>
-              <option value="hot">Hot (cv2.COLORMAP_HOT)</option>
-              <option value="viridis">Viridis</option>
-              <option value="plasma">Plasma</option>
-              <option value="magma">Magma</option>
-              <option value="inferno">Inferno</option>
-              <option value="jet">Jet</option>
-              <option value="gray">Grayscale</option>
-            </select>
+            <label class="form-label">Drone / Target Name</label>
+            <input type="text" class="form-input form-input-mono" id="stftDroneName" value="DJI-MAVIC-PRO-3" placeholder="e.g. DJI-MAVIC-PRO-3">
           </div>
           <div class="form-group">
             <label class="form-label">FFT Size (NFFT)</label>
@@ -415,6 +407,26 @@
               <option value="8192">8192</option>
               <option value="16384">16384</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Spectrogram Resolution</label>
+            <select class="form-select" id="stftResolutionPreset">
+              <option value="1024x512" selected>1024 × 512 (Standard RF)</option>
+              <option value="640x640">640 × 640 (YOLO Square)</option>
+              <option value="1280x720">1280 × 720 (HD 720p)</option>
+              <option value="1920x1080">1920 × 1080 (Full HD)</option>
+              <option value="custom">Custom Resolution...</option>
+            </select>
+          </div>
+          <div class="form-row" id="stftCustomResRow" style="display: none; margin-bottom: 8px;">
+            <div class="form-group">
+              <label class="form-label" style="font-size: 11px;">Width (px)</label>
+              <input type="number" step="32" class="form-input form-input-mono" id="stftRenderWidth" value="1024">
+            </div>
+            <div class="form-group">
+              <label class="form-label" style="font-size: 11px;">Height (px)</label>
+              <input type="number" step="32" class="form-input form-input-mono" id="stftRenderHeight" value="512">
+            </div>
           </div>
           <div class="form-row">
             <div class="form-group">
@@ -451,6 +463,11 @@
         <input type="file" id="fileInput" accept=".h5,.hdf5,.iq,.bin" style="display: none;">
       </div>
       <div style="margin-top: 16px;">
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label class="form-label">Drone / Target Name</label>
+          <input type="text" class="form-input form-input-mono" id="uploadDroneName" value="DJI-MAVIC-PRO-3"
+            placeholder="e.g. DJI-MAVIC-PRO-3 or DJI-MINI-4">
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Frequency Center (Fc, MHz)</label>
@@ -458,12 +475,9 @@
               placeholder="e.g. 2400.0">
           </div>
           <div class="form-group">
-            <label class="form-label">Frequency Sample (Fs)</label>
-            <select class="form-select" id="uploadFs">
-              <option value="245760000">245.76 MHz (5G / Wideband)</option>
-              <option value="61440000" selected>61.44 MHz (LTE / Standard)</option>
-              <option value="30720000">30.72 MHz (LTE Narrowband)</option>
-            </select>
+            <label class="form-label">Frequency Sample (Fs, MHz)</label>
+            <input type="number" step="0.01" class="form-input form-input-mono" id="uploadFs" value="61.44"
+              placeholder="e.g. 61.44 or 25.0">
           </div>
         </div>
         <div class="form-row">
@@ -475,14 +489,21 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Chunk Duration (ms)</label>
-            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadChunkDur" value="30.0">
+            <label class="form-label">Default SNR (dB)</label>
+            <input type="number" step="0.5" class="form-input form-input-mono" id="uploadSnr" value="18.0"
+              placeholder="e.g. 18.0">
           </div>
         </div>
         <div class="form-row">
           <div class="form-group">
-            <label class="form-label">Overlap Duration (ms)</label>
-            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadOverlapDur" value="10.0">
+            <label class="form-label">Spectrogram Resolution</label>
+            <select class="form-select" id="uploadResolutionPreset">
+              <option value="1024x512" selected>1024 × 512 (Standard RF)</option>
+              <option value="640x640">640 × 640 (YOLO Square)</option>
+              <option value="1280x720">1280 × 720 (HD 720p)</option>
+              <option value="1920x1080">1920 × 1080 (Full HD)</option>
+              <option value="custom">Custom Resolution...</option>
+            </select>
           </div>
           <div class="form-group">
             <label class="form-label">FFT Size (NFFT)</label>
@@ -497,12 +518,32 @@
             </select>
           </div>
         </div>
+        <div class="form-row" id="uploadCustomResRow" style="display: none; margin-bottom: 8px;">
+          <div class="form-group">
+            <label class="form-label" style="font-size: 11px;">Width (px)</label>
+            <input type="number" step="32" class="form-input form-input-mono" id="uploadRenderWidth" value="1024">
+          </div>
+          <div class="form-group">
+            <label class="form-label" style="font-size: 11px;">Height (px)</label>
+            <input type="number" step="32" class="form-input form-input-mono" id="uploadRenderHeight" value="512">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">Chunk Duration (ms)</label>
+            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadChunkDur" value="30.0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">Overlap Duration (ms)</label>
+            <input type="number" step="1.0" class="form-input form-input-mono" id="uploadOverlapDur" value="10.0">
+          </div>
+        </div>
         <div class="form-row">
           <div class="form-group">
             <label class="form-label">Colormap</label>
             <select class="form-select" id="uploadColormap">
-              <option value="turbo" selected>Turbo (Recommended)</option>
-              <option value="hot">Hot (cv2.COLORMAP_HOT)</option>
+              <option value="turbo" selected>Turbo</option>
+              <option value="hot">Hot</option>
               <option value="viridis">Viridis</option>
               <option value="plasma">Plasma</option>
               <option value="magma">Magma</option>
@@ -512,12 +553,24 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">Window Function</label>
-            <select class="form-select" id="uploadWindow">
-              <option value="hann" selected>Hann</option>
-              <option value="hamming">Hamming</option>
-              <option value="blackman">Blackman</option>
+            <label class="form-label">Colormap Engine</label>
+            <select class="form-select" id="uploadColormapEngine">
+              <option value="opencv" selected>OpenCV (Fast)</option>
+              <option value="matplotlib">Matplotlib</option>
             </select>
+          </div>
+        </div>
+        <div class="form-group" style="padding: 10px 12px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 6px; margin-bottom: 12px;">
+          <label class="checkbox-label" style="font-weight: 600; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; cursor: pointer;">
+            <input type="checkbox" id="uploadApplyAwgn">
+            <span><i class="fas fa-random"></i> Add AWGN Noise (Modify Signal SNR on Upload)</span>
+          </label>
+          <div id="uploadAwgnFields" style="display: none; margin-top: 8px;">
+            <label class="form-label" style="font-size: 11px;">Target SNR (dB)</label>
+            <input type="number" step="0.5" class="form-input form-input-mono" id="uploadAwgnSnr" value="10.0" placeholder="e.g. 10.0">
+            <span style="font-size: 11px; color: var(--text-secondary); margin-top: 4px; display: block;">
+              Injects complex Gaussian noise to achieve the exact target SNR across all signal chunks.
+            </span>
           </div>
         </div>
       </div>
@@ -539,15 +592,24 @@
         Instantly generates synthetic RF signals including FMCW Radar Chirps, WiFi 802.11ax OFDM bursts, Bluetooth FHSS
         pulses, and realistic noise floor.
       </div>
+      <div class="form-group" style="margin-bottom: 10px;">
+        <label class="form-label">Drone / Target Name</label>
+        <input type="text" class="form-input form-input-mono" id="sampleDroneName" value="DJI-MAVIC-PRO-3"
+          placeholder="e.g. DJI-MAVIC-PRO-3">
+      </div>
       <div class="form-row">
         <div class="form-group">
-          <label class="form-label">Sampling Rate (Fs)</label>
-          <select class="form-select" id="sampleFs">
-            <option value="245760000">245.76 MHz (Wideband)</option>
-            <option value="61440000" selected>61.44 MHz (Standard)</option>
-            <option value="30720000">30.72 MHz (Narrowband)</option>
-          </select>
+          <label class="form-label">Sampling Rate (Fs, MHz)</label>
+          <input type="number" step="0.01" class="form-input form-input-mono" id="sampleFs" value="61.44"
+            placeholder="e.g. 61.44 or 25.0">
         </div>
+        <div class="form-group">
+          <label class="form-label">Center Frequency (Fc, MHz)</label>
+          <input type="number" step="0.1" class="form-input form-input-mono" id="sampleCenterFreq" value="2400.0"
+            placeholder="e.g. 2400.0">
+        </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
           <label class="form-label">Data Format</label>
           <select class="form-select" id="sampleFormat">
@@ -555,8 +617,6 @@
             <option value="int16">int16</option>
           </select>
         </div>
-      </div>
-      <div class="form-row">
         <div class="form-group">
           <label class="form-label">Output Container</label>
           <select class="form-select" id="sampleOutFormat">
@@ -564,23 +624,254 @@
             <option value="iq">.iq (Raw Binary)</option>
           </select>
         </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
-          <label class="form-label">Duration (ms)</label>
-          <input type="number" step="10" class="form-input form-input-mono" id="sampleDuration" value="100.0">
+          <label class="form-label">Spectrogram Resolution</label>
+          <select class="form-select" id="sampleResolutionPreset">
+            <option value="1024x512" selected>1024 × 512 (Standard RF)</option>
+            <option value="640x640">640 × 640 (YOLO Square)</option>
+            <option value="1280x720">1280 × 720 (HD 720p)</option>
+            <option value="1920x1080">1920 × 1080 (Full HD)</option>
+            <option value="custom">Custom Resolution...</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Default SNR (dB)</label>
+          <input type="number" step="0.5" class="form-input form-input-mono" id="sampleSnr" value="18.0"
+            placeholder="e.g. 18.0">
+        </div>
+      </div>
+      <div class="form-row" id="sampleCustomResRow" style="display: none; margin-bottom: 8px;">
+        <div class="form-group">
+          <label class="form-label" style="font-size: 11px;">Width (px)</label>
+          <input type="number" step="32" class="form-input form-input-mono" id="sampleRenderWidth" value="1024">
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="font-size: 11px;">Height (px)</label>
+          <input type="number" step="32" class="form-input form-input-mono" id="sampleRenderHeight" value="512">
         </div>
       </div>
       <div class="form-row">
         <div class="form-group">
+          <label class="form-label">Duration (ms)</label>
+          <input type="number" step="10" class="form-input form-input-mono" id="sampleDuration" value="100.0">
+        </div>
+        <div class="form-group">
           <label class="form-label">Chunk Duration (ms)</label>
           <input type="number" step="1.0" class="form-input form-input-mono" id="sampleChunkDur" value="30.0">
         </div>
+      </div>
+      <div class="form-row">
         <div class="form-group">
           <label class="form-label">Overlap Duration (ms)</label>
           <input type="number" step="1.0" class="form-input form-input-mono" id="sampleOverlapDur" value="10.0">
         </div>
       </div>
+      <div class="form-group" style="padding: 10px 12px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 6px; margin-bottom: 12px;">
+        <label class="checkbox-label" style="font-weight: 600; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="sampleApplyAwgn">
+          <span><i class="fas fa-random"></i> Add AWGN Noise (Modify Signal SNR)</span>
+        </label>
+        <div id="sampleAwgnFields" style="display: none; margin-top: 8px;">
+          <label class="form-label" style="font-size: 11px;">Target SNR (dB)</label>
+          <input type="number" step="0.5" class="form-input form-input-mono" id="sampleAwgnSnr" value="10.0" placeholder="e.g. 10.0">
+        </div>
+      </div>
       <div class="modal-footer">
         <button class="btn btn-primary" id="generateSampleSubmitBtn">Generate & Load</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Custom Export Modal -->
+  <div class="modal-overlay" id="exportModal">
+    <div class="modal-dialog" style="max-width: 600px;">
+      <div class="modal-header">
+        <div class="modal-title"><i class="fas fa-download" style="color: var(--accent-cyan);"></i> Export Dataset Package</div>
+        <button class="icon-btn" id="closeExportModalBtn"><i class="fas fa-times"></i></button>
+      </div>
+      
+      <!-- Step 1: Select Format -->
+      <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px;">
+        1. Select Dataset Annotation Format
+      </div>
+      <div class="format-selector-grid">
+        <div class="format-card active" id="formatCardYolo" data-format="yolo">
+          <div class="format-card-header">
+            <span class="format-card-title"><i class="fas fa-bullseye" style="color: #22c55e;"></i> YOLO Format</span>
+            <input type="radio" name="exportFormatRadio" value="yolo" checked style="accent-color: var(--accent-cyan);">
+          </div>
+          <div class="format-card-desc">Ultralytics / YOLOv5 / YOLOv8 / YOLOv11 (images/, labels/*.txt, data.yaml)</div>
+        </div>
+        <div class="format-card" id="formatCardCoco" data-format="coco">
+          <div class="format-card-header">
+            <span class="format-card-title"><i class="fas fa-file-code" style="color: var(--accent-cyan);"></i> COCO + BDW</span>
+            <input type="radio" name="exportFormatRadio" value="coco" style="accent-color: var(--accent-cyan);">
+          </div>
+          <div class="format-card-desc">Standard COCO JSON with RF Signal BDW parameters & spectrograms/</div>
+        </div>
+      </div>
+
+      <!-- Step 2: Choose Components to Include -->
+      <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px;">
+        2. Select Package Components to Include
+      </div>
+      <div class="export-components-grid">
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncImages" checked>
+          <span class="comp-icon"><i class="fas fa-images" style="color: var(--accent-cyan);"></i></span>
+          <span>Spectrogram Images</span>
+        </label>
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncLabels" checked>
+          <span class="comp-icon"><i class="fas fa-tags" style="color: #10b981;"></i></span>
+          <span id="exportLabelTypeName">YOLO Labels + data.yaml</span>
+        </label>
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncCsv" checked>
+          <span class="comp-icon"><i class="fas fa-table" style="color: var(--accent-orange);"></i></span>
+          <span>Signal BDW CSV Summary</span>
+        </label>
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncMetadata" checked>
+          <span class="comp-icon"><i class="fas fa-code" style="color: #a855f7;"></i></span>
+          <span>Session metadata.json</span>
+        </label>
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncIq">
+          <span class="comp-icon"><i class="fas fa-wave-square" style="color: #38bdf8;"></i></span>
+          <span>Raw .iq Binary Slices</span>
+        </label>
+        <label class="export-comp-item">
+          <input type="checkbox" id="exportIncVideo">
+          <span class="comp-icon"><i class="fas fa-film" style="color: #f43f5e;"></i></span>
+          <span>Continuous Waterfall Video (MP4)</span>
+        </label>
+      </div>
+
+      <!-- Step 3: Spectrogram Resolution & Format -->
+      <div style="font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; margin-bottom: 8px; letter-spacing: 0.5px;">
+        3. Spectrogram Resolution & Image Format
+      </div>
+      <div class="form-row" style="margin-bottom: 12px;">
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Image File Format</label>
+          <select class="form-select" id="exportImgFormat">
+            <option value="jpg" selected>JPEG (.jpg) - Standard for YOLO</option>
+            <option value="png">PNG (.png) - Lossless</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1;">
+          <label class="form-label">Spectrogram Resolution</label>
+          <select class="form-select" id="exportResolutionPreset">
+            <option value="current" selected>Current Session View</option>
+            <option value="640x640">640 × 640 (YOLO Standard)</option>
+            <option value="1024x512">1024 × 512 (Standard RF)</option>
+            <option value="1280x720">1280 × 720 (HD 720p)</option>
+            <option value="1920x1080">1920 × 1080 (Full HD)</option>
+            <option value="custom">Custom Width × Height...</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-row" id="exportCustomResRow" style="display: none; margin-bottom: 12px;">
+        <div class="form-group">
+          <label class="form-label" style="font-size: 11px;">Export Width (px)</label>
+          <input type="number" step="32" class="form-input form-input-mono" id="exportRenderWidth" value="1024">
+        </div>
+        <div class="form-group">
+          <label class="form-label" style="font-size: 11px;">Export Height (px)</label>
+          <input type="number" step="32" class="form-input form-input-mono" id="exportRenderHeight" value="512">
+        </div>
+      </div>
+
+      <!-- Step 4: Target Drone Name -->
+      <div class="form-group" style="margin-bottom: 12px;">
+        <label class="form-label">Drone / Target Name (Prefix)</label>
+        <input type="text" class="form-input form-input-mono" id="exportDroneName" value="DJI-MAVIC-PRO-3" placeholder="e.g. DJI-MAVIC-PRO-3">
+      </div>
+
+      <!-- Step 5: SNR Modification (AWGN Noise Injection) -->
+      <div class="form-group" style="padding: 10px 12px; background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: 6px; margin-bottom: 14px;">
+        <label class="checkbox-label" style="font-weight: 600; color: var(--accent-cyan); display: flex; align-items: center; gap: 8px; cursor: pointer;">
+          <input type="checkbox" id="exportApplyAwgn">
+          <span><i class="fas fa-random"></i> Add AWGN Noise (Change SNR of Exported Data)</span>
+        </label>
+        <div id="exportAwgnFields" style="display: none; margin-top: 8px;">
+          <label class="form-label" style="font-size: 11px;">Target Export SNR (dB)</label>
+          <input type="number" step="0.5" class="form-input form-input-mono" id="exportAwgnSnr" value="10.0" placeholder="e.g. 10.0 or 15.0">
+          <span style="font-size: 11px; color: var(--text-secondary); margin-top: 4px; display: block;">
+            Injects Gaussian noise to spectrogram images and raw IQ chunks, and updates metadata/CSV SNR.
+          </span>
+        </div>
+      </div>
+
+      <!-- Step 6: Live Package Preview Tree -->
+      <div class="manifest-preview-box">
+        <div class="manifest-header-row">
+          <div class="manifest-zip-badge">
+            <i class="fas fa-archive"></i> <span id="manifestZipName">yolo_dataset_DJI-MAVIC-PRO-3...zip</span>
+          </div>
+          <div class="manifest-stats-badge" id="manifestStatsBadge">~18.5 MB | 164 Files</div>
+        </div>
+        <div class="manifest-tree-list" id="manifestTreeList">
+          <!-- Dynamically populated by export.js -->
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button class="btn btn-outline" id="cancelExportBtn">Cancel</button>
+        <button class="btn btn-primary" id="confirmExportBtn"><i class="fas fa-download"></i> Download Export Package</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Export Completion & Package Preview Summary Modal -->
+  <div class="modal-overlay" id="exportSuccessModal">
+    <div class="modal-dialog" style="max-width: 520px; text-align: center;">
+      <div style="width: 56px; height: 56px; border-radius: 50%; background: rgba(16, 185, 129, 0.15); border: 2px solid #10b981; color: #10b981; display: flex; align-items: center; justify-content: center; font-size: 26px; margin: 0 auto 14px auto; box-shadow: 0 0 20px rgba(16, 185, 129, 0.3);">
+        <i class="fas fa-check"></i>
+      </div>
+      <div style="font-size: 18px; font-weight: 700; color: #fff; margin-bottom: 6px;">Dataset Package Exported!</div>
+      <div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 16px;" id="exportSuccessSub">
+        Your dataset archive has been generated and downloaded.
+      </div>
+
+      <!-- Summary Badges Grid -->
+      <div class="export-success-badge-grid">
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatFormat">YOLO</div>
+          <div class="export-stat-label">Format</div>
+        </div>
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatResolution">640×640</div>
+          <div class="export-stat-label">Resolution</div>
+        </div>
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatFiles">164 Files</div>
+          <div class="export-stat-label">Package Files</div>
+        </div>
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatSize">~18.5 MB</div>
+          <div class="export-stat-label">Est. Size</div>
+        </div>
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatSnr">Original</div>
+          <div class="export-stat-label">Target SNR</div>
+        </div>
+        <div class="export-stat-card">
+          <div class="export-stat-val" id="successStatIq">No</div>
+          <div class="export-stat-label">Raw IQ</div>
+        </div>
+      </div>
+
+      <div style="background: rgba(0, 229, 255, 0.05); border: 1px solid rgba(0, 229, 255, 0.2); border-radius: var(--radius-sm); padding: 10px 14px; font-family: var(--font-mono); font-size: 11px; color: var(--accent-cyan); margin-bottom: 18px; word-break: break-all;" id="successZipFilename">
+        yolo_dataset_DJI-MAVIC-PRO-3_61.44MHz_2400MHz_float.zip
+      </div>
+
+      <div style="display: flex; justify-content: center; gap: 12px;">
+        <button class="btn btn-outline" id="closeExportSuccessBtn">Close</button>
+        <button class="btn btn-primary" id="reDownloadExportBtn"><i class="fas fa-redo"></i> Re-Download</button>
       </div>
     </div>
   </div>
