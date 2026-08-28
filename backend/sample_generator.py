@@ -2,7 +2,7 @@ import os
 import math
 import numpy as np
 import h5py
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 class RFSampleGenerator:
     """
@@ -17,10 +17,14 @@ class RFSampleGenerator:
                              iq_format: str = "float32",
                              snr_target_db: float = 20.0,
                              output_format: str = "h5",
-                             output_path: str = "/home/dev/labelling_tool/samples/sample_capture.h5") -> Tuple[str, List[Dict[str, Any]]]:
+                             output_path: Optional[str] = None) -> Tuple[str, List[Dict[str, Any]]]:
         """
         Generates multi-signal RF environment with FMCW, OFDM, FHSS, and CW pulses.
         """
+        if output_path is None:
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            output_path = os.path.join(base_dir, "samples", f"sample_capture.{output_format}")
+
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         total_samples = int(round(duration_ms * 1e-3 * fs))
         t = np.arange(total_samples) / fs

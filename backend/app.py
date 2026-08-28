@@ -54,7 +54,8 @@ async def log_requests_and_no_cache(request: Request, call_next):
 
     return response
 
-UPLOAD_DIR = "/home/dev/labelling_tool/samples"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+UPLOAD_DIR = os.path.join(BASE_DIR, "samples")
 MODELS_DIR = os.path.join(UPLOAD_DIR, "models")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(MODELS_DIR, exist_ok=True)
@@ -1233,6 +1234,6 @@ def favicon():
     return Response(status_code=204)
 
 # Static files for frontend
-FRONTEND_DIR = "/home/dev/labelling_tool/frontend"
+FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 if os.path.exists(FRONTEND_DIR):
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

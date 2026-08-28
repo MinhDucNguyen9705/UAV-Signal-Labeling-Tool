@@ -6,3 +6,4 @@ test.py
 single_output/
 /*.py
 *.iq
+logs/

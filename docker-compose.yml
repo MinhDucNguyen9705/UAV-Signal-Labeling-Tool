@@ -1,0 +1,12 @@
+services:
+  rf-annotator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: rf-labeling-tool
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./samples:/app/samples
+      - ./logs:/app/logs
+    restart: unless-stopped

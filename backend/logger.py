@@ -75,19 +75,22 @@ if not logger.handlers:
     logger.addHandler(console_handler)
 
     # Rotating File Handler (20 MB max per file, 5 backups)
-    file_handler = RotatingFileHandler(
-        LOG_FILE_PATH,
-        maxBytes=20 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8"
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_fmt = logging.Formatter(
-        fmt="[%(asctime)s] [%(levelname)-7s] [%(name)s] [%(filename)s:%(lineno)d] %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S"
-    )
-    file_handler.setFormatter(file_fmt)
-    logger.addHandler(file_handler)
+    try:
+        file_handler = RotatingFileHandler(
+            LOG_FILE_PATH,
+            maxBytes=20 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8"
+        )
+        file_handler.setLevel(logging.DEBUG)
+        file_fmt = logging.Formatter(
+            fmt="[%(asctime)s] [%(levelname)-7s] [%(name)s] [%(filename)s:%(lineno)d] %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S"
+        )
+        file_handler.setFormatter(file_fmt)
+        logger.addHandler(file_handler)
+    except Exception as e:
+        sys.stderr.write(f"Warning: Could not initialize file logger at {LOG_FILE_PATH}: {e}\n")
 
     # In-memory buffer handler
     logger.addHandler(ring_handler)

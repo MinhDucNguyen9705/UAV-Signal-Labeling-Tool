@@ -1,0 +1,24 @@
+# Web Framework & API Server
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+python-multipart>=0.0.9
+pydantic>=2.6.0
+
+# RF Signal Processing & Numerical Computation
+numpy>=1.24.0
+scipy>=1.11.0
+h5py>=3.10.0
+
+# Image & Spectrogram Processing
+opencv-python-headless>=4.8.0
+Pillow>=10.0.0
+matplotlib>=3.8.0
+
+# Dataset Formats & Exporters (YOLO / COCO / BDW)
+PyYAML>=6.0
+
+# Machine Learning & Auto-Labeling Models
+onnxruntime>=1.16.0
+
+# Utilities
+requests>=2.31.0
